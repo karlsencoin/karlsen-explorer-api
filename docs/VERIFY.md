@@ -1,91 +1,68 @@
 # Verify against live `rest-v2` before cut-over
 
 The schema does not say how some legacy fields are formatted, so each assumption is
-compared with a real response. Captures live in `crates/explorer-api/tests/fixtures/`;
-`scripts/capture-golden.sh` fetches more.
+compared with a real response. Captures live in `crates/explorer-api/tests/fixtures/`
+(all taken from the legacy API on 2026-10-18); `scripts/capture-golden.sh` fetches more.
 
-Current reference: `golden-block.json`, `GET /blocks/{hash}?includeTransactions=true`
-on a tip block, captured 2026-10-18. It holds only a coinbase transaction, so
-everything about regular transactions is still open (see the last section).
-`routes::blocks::tests::serialization_matches_golden_wire_format` rebuilds the response
-from this file and compares it with the golden, field by field.
+| Fixture | Request | Block |
+| --- | --- | --- |
+| `golden-block.json` | `includeTransactions=true` | tip block, coinbase only |
+| `golden-block-with-txs.json` | `includeTransactions=true` | chain block, coinbase + 1 regular transaction |
+| `golden-block-color.json` | `includeColor=true` | same block |
+| `golden-block-notx.json` | `includeTransactions=false` | same block |
 
-## Confirmed by the golden block
+The unit tests in `routes/blocks.rs` rebuild the response from each fixture, using the
+same functions as the handler, and compare it with the capture field by field.
 
-- `verboseData.difficulty` = `2^255 / target(bits)`: bits `0x1c7133d7` gives
-  `4856392896.376908`, identical to the legacy value.
+## Confirmed
+
+- `verboseData.difficulty` = `2^255 / target(bits)` (two blocks, identical to the legacy value).
 - Types: `timestamp`, `daaScore`, `blueScore`, `nonce`, `blueWork` are strings; `bits`,
-  `amount`, `verboseData.blockTime` are numbers.
-- `header.nonce` is a decimal string, and `blocks.nonce` is big-endian: block `e5ed608d…`
+  `amount`, `verboseData.blockTime`, `mass`, `computeMass` are numbers.
+- `header.nonce` is a decimal string and `blocks.nonce` is big-endian: block `e5ed608d…`
   stores `70078f6bb67ce81a`, and legacy returns `8072578549870815258` for it.
-- `header.blueWork` is lowercase hex without `0x` and without leading zeros.
+- `header.blueWork` is lowercase hex without leading zeros; the stored `blocks.blue_work`
+  is already trimmed.
 - `scriptPublicKey.version` is `0`; `scriptPublicKeyType` is `pubkey`; the address
   derived from the raw script equals the legacy address.
-- `lockTime`, `gas`, `version`, `mass`, `computeMass` are `0` on the coinbase, and the
-  coinbase has `inputs: []`.
-- `isChainBlock` is `false` for a tip block.
+- `lockTime`, `gas` and `version` are `0` (coinbase and regular transaction); input
+  `sequence` is `0`.
+- `isChainBlock` is `false` for a tip block and `true` for an accepted chain block.
+- The coinbase comes first in `transactionIds` / `transactions`.
+- `includeTransactions=false`: `transactions` is present and `null`.
+- `includeColor=true`: `extra.color` is `"blue"`; `minerAddress` and `minerInfo` stay `null`.
 
-## Corrected
+## Fixed after comparing
 
-- Responses always carry `extra: {"color": null, "minerAddress": null, "minerInfo": null}`
-  (all `null` without `includeColor`). It was missing and is now emitted.
+- `extra` (`{color, minerAddress, minerInfo}`) is always present; it was missing.
+- `transactions` is `null` with `includeTransactions=false`; it used to be omitted.
+- `parents[0]` lists the selected parent first (legacy order). The remaining parents are
+  sorted by hash and `childrenHashes` is sorted by hash; the legacy order for those is
+  not reproducible from the database, so callers must not depend on it.
 
-## Known deviation: `header.parents`
+## Known deviations
 
-The legacy response has one `parentHashes` entry per DAG level (41 in the golden). The
-database stores only level 0 (`block_parent`), so this API emits a single entry. Levels
-above 0 can only come from the node, which suggests legacy reads this endpoint from the
-node rather than from Postgres. Open decision: accept the single level, or add a
-node-backed path for `/blocks/{hash}`.
+- **`header.parents`**: legacy returns one `parentHashes` entry per DAG level (41 in every
+  capture). The database stores only level 0 (`block_parent`), so this API returns a single
+  entry. Higher levels can only come from the node, which suggests legacy reads this
+  endpoint from the node rather than from Postgres. Open decision: accept the single
+  level, or add a node-backed path for `/blocks/{hash}`.
+- **Transaction `mass`**: for the regular transaction legacy returns `mass: 172` and
+  `computeMass: 2036`. The schema has a single `mass` column and this API emits it for
+  both fields, so `mass` differs (it is probably the storage mass, which is not stored).
+  Coinbase transactions have `0` for both and match.
+- **`includeColor=true`** is answered with 501. Legacy returns `"blue"` or `"red"`, most
+  likely from a node call; deriving it from the database would need a lookup in
+  `merge_set_blues_hashes` / `merge_set_reds_hashes` of the accepting chain block.
 
-## Still unverified (needs a block with regular transactions or database access)
+## Still unverified
 
-- `header.blueWork` when the value has an odd number of hex digits (leading zero nibble).
-  Stored `blocks.blue_work` is already trimmed (9 bytes, not padded), but the golden
-  values are even-length, so they cannot tell the two trimming rules apart.
-- `verboseData.isChainBlock` for accepted chain blocks (assumed: the block appears as
-  `block_hash` in `transactions_acceptances`), and `childrenHashes` on a block with children.
-- Transaction order inside a block: the schema stores no index; currently coinbase
-  first, then by id.
-- Regular transactions: input `signatureScript`, `sigOpCount`, `sequence` (emitted as
-  `0`), transaction `version`, `lockTime`, `gas`, and `mass` versus
-  `verboseData.computeMass`.
-- `includeColor=true`: `extra.color` and whether `minerAddress` / `minerInfo` are filled
-  (currently answered with 501).
-- `includeTransactions=false`: whether legacy omits `transactions` or returns `null`.
-
-## Captures still needed
-
-Run on the legacy host (`BASE` is the legacy base URL). The script walks the selected
-parent chain from the tip until it finds a block with more than one transaction, then
-saves three variants:
-
-```sh
-python3 - <<'EOF'
-import json, urllib.request
-base = "BASE"
-h = json.load(urllib.request.urlopen(base + "/info/blockdag"))["tipHashes"][0]
-for _ in range(2000):
-    raw = urllib.request.urlopen(f"{base}/blocks/{h}?includeTransactions=true").read()
-    b = json.loads(raw)
-    if len(b["transactions"]) > 1:
-        open("golden-block-with-txs.json", "wb").write(raw)
-        for name, q in (("color", "includeTransactions=true&includeColor=true"),
-                        ("notx", "includeTransactions=false")):
-            open(f"golden-block-{name}.json", "wb").write(
-                urllib.request.urlopen(f"{base}/blocks/{h}?{q}").read())
-        print("saved for", h, "-", len(b["transactions"]), "txs")
-        break
-    h = b["verboseData"]["selectedParentHash"]
-else:
-    print("no block with more than one transaction found")
-EOF
-```
-
-And the stored bytes for the golden block (nonce / blue work endianness and trimming):
-
-```sql
-SELECT encode(nonce, 'hex') AS nonce, encode(blue_work, 'hex') AS blue_work
-FROM blocks
-WHERE hash = decode('ba735a630066816f939c0a1de2ed81e9975f7e75f2649a49900f3eaa2cf39234', 'hex');
-```
+- `header.blueWork` with an odd number of hex digits (leading zero nibble): all captured
+  values are even-length, so the two trimming rules cannot be told apart.
+- Order of several regular transactions in one block (currently coinbase first, then by
+  id; the captures hold at most one regular transaction).
+- Non-zero `sequence`, `lockTime`, `gas` or transaction `version`.
+- Outputs that are not plain `pubkey` scripts (`scripthash`, `pubkeyecdsa`, non-standard)
+  and the exact `scriptPublicKeyType` strings for them.
+- `isChainBlock` from `transactions_acceptances` for chain blocks whose acceptance data is
+  empty.

@@ -78,7 +78,7 @@ struct OutputRow {
 #[derive(Debug, Serialize)]
 pub struct BlockModel {
     header: Header,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    /// `null` (not absent) with `includeTransactions=false`, as in legacy responses.
     transactions: Option<Vec<TxModel>>,
     #[serde(rename = "verboseData")]
     verbose_data: VerboseData,
@@ -244,6 +244,17 @@ fn nonce_decimal(b: &Option<Vec<u8>>) -> String {
     n.to_string()
 }
 
+/// Legacy lists the selected parent first. The rest of the order is not stored, so it
+/// is sorted by hash to keep responses stable.
+fn order_parents(selected: &str, mut parents: Vec<String>) -> Vec<String> {
+    parents.sort_by(|a, b| {
+        (a.as_str() != selected)
+            .cmp(&(b.as_str() != selected))
+            .then_with(|| a.cmp(b))
+    });
+    parents
+}
+
 /// Output model with the script type and address derived from the raw script.
 fn output_model(amount: i64, script: &[u8]) -> OutputModel {
     OutputModel {
@@ -333,7 +344,14 @@ pub async fn get_block(
 
     let bits = block.bits.unwrap_or_default();
     let blue_score = block.blue_score.unwrap_or_default().to_string();
-    let parent_hashes: Vec<String> = parents.iter().map(|p| hex::encode(&p.0)).collect();
+    let selected_parent = hx(&block.selected_parent_hash);
+    let parent_hashes = order_parents(
+        &selected_parent,
+        parents.iter().map(|p| hex::encode(&p.0)).collect(),
+    );
+    // The stored order is arbitrary; sorting only makes responses deterministic.
+    let mut children_hashes: Vec<String> = children.iter().map(|c| hex::encode(&c.0)).collect();
+    children_hashes.sort();
 
     Ok(Json(BlockModel {
         header: Header {
@@ -354,10 +372,10 @@ pub async fn get_block(
         verbose_data: VerboseData {
             hash: hex::encode(&block.hash),
             difficulty: difficulty_from_bits(bits as u32),
-            selected_parent_hash: hx(&block.selected_parent_hash),
+            selected_parent_hash: selected_parent,
             transaction_ids: txs.iter().map(|t| hex::encode(&t.transaction_id)).collect(),
             blue_score,
-            children_hashes: children.iter().map(|c| hex::encode(&c.0)).collect(),
+            children_hashes,
             merge_set_blues_hashes: hx_all(&block.merge_set_blues_hashes),
             merge_set_reds_hashes: hx_all(&block.merge_set_reds_hashes),
             is_chain_block: is_chain,
@@ -444,9 +462,15 @@ mod tests {
     use super::*;
     use serde_json::Value;
 
-    /// Real `GET /blocks/{hash}?includeTransactions=true` response captured from the
-    /// legacy API on 2026-10-18. It is a tip block, so it holds only a coinbase.
-    const GOLDEN: &str = include_str!("../../tests/fixtures/golden-block.json");
+    // Real legacy responses captured on 2026-10-18 (see docs/VERIFY.md).
+    /// Tip block holding only a coinbase (`includeTransactions=true`).
+    const COINBASE_ONLY: &str = include_str!("../../tests/fixtures/golden-block.json");
+    /// Chain block with a coinbase and one regular transaction.
+    const WITH_TXS: &str = include_str!("../../tests/fixtures/golden-block-with-txs.json");
+    /// The block above with `includeColor=true`.
+    const WITH_COLOR: &str = include_str!("../../tests/fixtures/golden-block-color.json");
+    /// The block above with `includeTransactions=false`.
+    const WITHOUT_TXS: &str = include_str!("../../tests/fixtures/golden-block-notx.json");
 
     fn st(v: &Value) -> String {
         v.as_str().expect("string field").to_string()
@@ -456,23 +480,65 @@ mod tests {
         v.as_array().expect("array field").iter().map(st).collect()
     }
 
+    fn input_from_golden(i: &Value) -> InputModel {
+        InputModel {
+            previous_outpoint: Outpoint {
+                transaction_id: st(&i["previousOutpoint"]["transactionId"]),
+                index: i["previousOutpoint"]["index"].as_i64().unwrap() as i32,
+            },
+            signature_script: st(&i["signatureScript"]),
+            sig_op_count: i["sigOpCount"].as_i64().unwrap() as i32,
+            // Not stored; the handler emits 0 and the golden agrees.
+            sequence: 0,
+        }
+    }
+
+    fn tx_from_golden(tx: &Value) -> TxModel {
+        let tv = &tx["verboseData"];
+        TxModel {
+            inputs: tx["inputs"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(input_from_golden)
+                .collect(),
+            outputs: tx["outputs"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|o| {
+                    let script = hex::decode(st(&o["scriptPublicKey"]["scriptPublicKey"])).unwrap();
+                    output_model(o["amount"].as_i64().unwrap(), &script)
+                })
+                .collect(),
+            subnetwork_id: st(&tx["subnetworkId"]),
+            payload: st(&tx["payload"]),
+            verbose_data: TxVerbose {
+                transaction_id: st(&tv["transactionId"]),
+                hash: st(&tv["hash"]),
+                compute_mass: tv["computeMass"].as_i64().unwrap(),
+                block_hash: st(&tv["blockHash"]),
+                block_time: tv["blockTime"].as_i64().unwrap(),
+            },
+            lock_time: 0,
+            gas: 0,
+            // Known gap: the database does not store `mass` (the golden has 172 next to
+            // a compute mass of 2036), so the golden value is used here.
+            mass: tx["mass"].as_i64().unwrap(),
+            version: 0,
+        }
+    }
+
     /// Builds our response model from the golden values. Everything the handler
     /// derives (difficulty, nonce, blue work, script type, address) goes through the
     /// same functions the handler uses, so a wrong assumption shows up as a diff.
     fn model_from_golden(g: &Value) -> BlockModel {
         let h = &g["header"];
         let vd = &g["verboseData"];
-        let tx = &g["transactions"][0];
-        let tv = &tx["verboseData"];
-        assert!(
-            tx["inputs"].as_array().unwrap().is_empty(),
-            "coinbase has no inputs"
-        );
-
         let bits = h["bits"].as_i64().unwrap();
 
-        // Simulate the stored column values: 8-byte big-endian nonce and a zero-padded
-        // 24-byte blue work.
+        // Simulate the stored column values: 8-byte big-endian nonce and blue work as
+        // trimmed big-endian bytes.
         let nonce_bytes = st(&h["nonce"])
             .parse::<u64>()
             .unwrap()
@@ -485,8 +551,6 @@ mod tests {
             work_hex
         };
         let work = hex::decode(work_hex).unwrap();
-        let mut work_padded = vec![0u8; 24];
-        work_padded[24 - work.len()..].copy_from_slice(&work);
 
         BlockModel {
             header: Header {
@@ -498,39 +562,16 @@ mod tests {
                 bits,
                 nonce: nonce_decimal(&Some(nonce_bytes)),
                 daa_score: st(&h["daaScore"]),
-                blue_work: trimmed_hex(&Some(work_padded)),
+                blue_work: trimmed_hex(&Some(work)),
                 parents: vec![ParentHashes {
                     parent_hashes: strings(&h["parents"][0]["parentHashes"]),
                 }],
                 blue_score: st(&h["blueScore"]),
                 pruning_point: st(&h["pruningPoint"]),
             },
-            transactions: Some(vec![TxModel {
-                inputs: vec![],
-                outputs: tx["outputs"]
-                    .as_array()
-                    .unwrap()
-                    .iter()
-                    .map(|o| {
-                        let script =
-                            hex::decode(st(&o["scriptPublicKey"]["scriptPublicKey"])).unwrap();
-                        output_model(o["amount"].as_i64().unwrap(), &script)
-                    })
-                    .collect(),
-                subnetwork_id: st(&tx["subnetworkId"]),
-                payload: st(&tx["payload"]),
-                verbose_data: TxVerbose {
-                    transaction_id: st(&tv["transactionId"]),
-                    hash: st(&tv["hash"]),
-                    compute_mass: tv["computeMass"].as_i64().unwrap(),
-                    block_hash: st(&tv["blockHash"]),
-                    block_time: tv["blockTime"].as_i64().unwrap(),
-                },
-                lock_time: 0,
-                gas: 0,
-                mass: tx["mass"].as_i64().unwrap(),
-                version: 0,
-            }]),
+            transactions: g["transactions"]
+                .as_array()
+                .map(|txs| txs.iter().map(tx_from_golden).collect()),
             verbose_data: VerboseData {
                 hash: st(&vd["hash"]),
                 difficulty: difficulty_from_bits(bits as u32),
@@ -542,19 +583,27 @@ mod tests {
                 merge_set_reds_hashes: strings(&vd["mergeSetRedsHashes"]),
                 is_chain_block: vd["isChainBlock"].as_bool().unwrap(),
             },
-            extra: Extra::default(),
+            extra: Extra {
+                color: g["extra"]["color"].as_str().map(str::to_string),
+                miner_address: g["extra"]["minerAddress"].as_str().map(str::to_string),
+                miner_info: g["extra"]["minerInfo"].as_str().map(str::to_string),
+            },
         }
     }
 
-    #[test]
-    fn serialization_matches_golden_wire_format() {
-        let golden: Value = serde_json::from_str(GOLDEN).unwrap();
+    fn assert_matches_golden(raw: &str) {
+        let golden: Value = serde_json::from_str(raw).unwrap();
         let ours = model_from_golden(&golden);
 
         // Compared as text: serde_json's default float parser is not round-trip exact.
+        let literal = raw
+            .split("\"difficulty\":")
+            .nth(1)
+            .and_then(|rest| rest.split(',').next())
+            .expect("difficulty field");
         assert_eq!(
             serde_json::to_string(&ours.verbose_data.difficulty).unwrap(),
-            "4856392896.376908"
+            literal
         );
 
         let mut got = serde_json::to_value(&ours).unwrap();
@@ -562,12 +611,46 @@ mod tests {
         got["verboseData"]["difficulty"] = Value::Null;
         want["verboseData"]["difficulty"] = Value::Null;
         // Known gap: the node reports one `parents` entry per DAG level (41 in the
-        // golden); the database only stores level 0.
+        // goldens); the database only stores level 0.
         want["header"]["parents"]
             .as_array_mut()
             .unwrap()
             .truncate(1);
 
         assert_eq!(got, want);
+    }
+
+    #[test]
+    fn coinbase_only_block_matches_golden() {
+        assert_matches_golden(COINBASE_ONLY);
+    }
+
+    #[test]
+    fn block_with_regular_transaction_matches_golden() {
+        assert_matches_golden(WITH_TXS);
+    }
+
+    #[test]
+    fn block_with_color_matches_golden() {
+        assert_matches_golden(WITH_COLOR);
+    }
+
+    #[test]
+    fn transactions_are_null_when_not_requested() {
+        assert_matches_golden(WITHOUT_TXS);
+        let golden: Value = serde_json::from_str(WITHOUT_TXS).unwrap();
+        assert!(golden.get("transactions").is_some_and(Value::is_null));
+    }
+
+    #[test]
+    fn selected_parent_comes_first() {
+        let golden: Value = serde_json::from_str(WITH_TXS).unwrap();
+        let selected = st(&golden["verboseData"]["selectedParentHash"]);
+        let level0 = strings(&golden["header"]["parents"][0]["parentHashes"]);
+        // The golden's own order is selected parent first, and it is not hash order.
+        assert_eq!(level0[0], selected);
+        let mut shuffled = level0.clone();
+        shuffled.reverse();
+        assert_eq!(order_parents(&selected, shuffled), level0);
     }
 }

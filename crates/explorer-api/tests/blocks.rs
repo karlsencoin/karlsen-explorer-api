@@ -72,7 +72,7 @@ async fn block_with_transactions_matches_legacy_shape() {
 }
 
 #[tokio::test]
-async fn include_transactions_false_omits_them() {
+async fn include_transactions_false_returns_null() {
     let db = db_or_skip!();
     let (status, v) = get(
         &db.app(),
@@ -80,7 +80,8 @@ async fn include_transactions_false_omits_them() {
     )
     .await;
     assert_eq!(status, 200);
-    assert!(v.get("transactions").is_none());
+    // Legacy keeps the key and sets it to null.
+    assert!(v.get("transactions").is_some_and(|t| t.is_null()));
     assert_eq!(
         v["verboseData"]["transactionIds"].as_array().unwrap().len(),
         2
