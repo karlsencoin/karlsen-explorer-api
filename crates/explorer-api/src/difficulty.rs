@@ -1,8 +1,8 @@
 //! Compact `bits` -> difficulty, following the Kaspa convention:
 //! difficulty = max_target / target, where max_target = 2^255 - 1.
 //!
-//! NOTE: must be verified against live `rest-v2` output (golden capture)
-//! before cut-over; see docs/VERIFY.md.
+//! Verified against the legacy `rest-v2` golden capture (bits `0x1c7133d7` ->
+//! `4856392896.376908`); see `routes::blocks` tests and docs/VERIFY.md.
 
 /// Expand compact bits into an `f64` target (mantissa * 256^(exp-3)).
 pub fn target_from_bits(bits: u32) -> f64 {

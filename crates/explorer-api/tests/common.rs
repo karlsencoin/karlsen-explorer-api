@@ -12,28 +12,42 @@ pub struct TestDb {
     name: String,
 }
 
+/// Returns `None` only when `TEST_DATABASE_URL` is unset. Once a database is
+/// configured, any setup failure panics: a silent skip would make every database
+/// test pass without running.
 pub async fn setup() -> Option<TestDb> {
     let url = std::env::var("TEST_DATABASE_URL").ok()?;
+    // Make server-side error logs (e.g. the cause behind a 503) visible in test output.
+    let _ = tracing_subscriber::fmt().with_test_writer().try_init();
     let admin = PgPoolOptions::new()
         .max_connections(2)
         .connect(&url)
         .await
-        .ok()?;
+        .expect("connect to TEST_DATABASE_URL");
     let name = format!("explorer_test_{}_{}", std::process::id(), rand_suffix());
     admin
         .execute(format!("CREATE DATABASE {name}").as_str())
         .await
-        .ok()?;
+        .expect("create test database");
     let base = url.rsplit_once('/').map(|x| x.0).unwrap_or(&url);
     let pool = PgPoolOptions::new()
         .max_connections(4)
         .connect(&format!("{base}/{name}"))
         .await
-        .ok()?;
-    sqlx::raw_sql(include_str!("fixtures/schema-v20.sql"))
+        .expect("connect to test database");
+    // pg_dump 18 emits psql-only `\restrict` / `\unrestrict` lines, which the server
+    // rejects, so every psql meta-command line is dropped. The dump also empties the
+    // session `search_path`; on a pooled connection that would leave later queries
+    // (and the unqualified seed statements) unable to find any table.
+    let schema: String = include_str!("fixtures/schema-v20.sql")
+        .lines()
+        .filter(|l| !l.starts_with('\\') && !l.contains("set_config('search_path'"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    sqlx::raw_sql(&schema)
         .execute(&pool)
         .await
-        .ok()?;
+        .expect("load schema-v20.sql");
     sqlx::raw_sql(include_str!("fixtures/seed.sql"))
         .execute(&pool)
         .await

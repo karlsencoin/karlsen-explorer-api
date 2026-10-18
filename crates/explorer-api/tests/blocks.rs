@@ -10,7 +10,7 @@ macro_rules! db_or_skip {
         match setup().await {
             Some(db) => db,
             None => {
-                eprintln!("TEST_DATABASE_URL not set or unreachable: skipping");
+                eprintln!("TEST_DATABASE_URL not set: skipping");
                 return;
             }
         }
@@ -63,6 +63,11 @@ async fn block_with_transactions_matches_legacy_shape() {
         "01".repeat(32)
     );
     assert_eq!(txs[1]["verboseData"]["blockHash"], BLOCK);
+    // Always present in legacy responses, all null without includeColor.
+    assert_eq!(
+        v["extra"],
+        serde_json::json!({"color": null, "minerAddress": null, "minerInfo": null})
+    );
     db.teardown().await;
 }
 
