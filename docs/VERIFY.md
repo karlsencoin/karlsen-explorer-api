@@ -16,7 +16,8 @@ from this file and compares it with the golden, field by field.
   `4856392896.376908`, identical to the legacy value.
 - Types: `timestamp`, `daaScore`, `blueScore`, `nonce`, `blueWork` are strings; `bits`,
   `amount`, `verboseData.blockTime` are numbers.
-- `header.nonce` is a decimal string; a full 64-bit value (`15982507872895737604`) fits.
+- `header.nonce` is a decimal string, and `blocks.nonce` is big-endian: block `e5ed608d…`
+  stores `70078f6bb67ce81a`, and legacy returns `8072578549870815258` for it.
 - `header.blueWork` is lowercase hex without `0x` and without leading zeros.
 - `scriptPublicKey.version` is `0`; `scriptPublicKeyType` is `pubkey`; the address
   derived from the raw script equals the legacy address.
@@ -39,11 +40,9 @@ node-backed path for `/blocks/{hash}`.
 
 ## Still unverified (needs a block with regular transactions or database access)
 
-- `header.nonce` byte order in `blocks.nonce` (assumed big-endian). For the golden
-  block the stored bytes should be `ddcd463b3fd59f04`; `049fd53f3b46cddd` would mean
-  little-endian.
 - `header.blueWork` when the value has an odd number of hex digits (leading zero nibble).
-  The golden value is even-length, so it cannot tell the two trimming rules apart.
+  Stored `blocks.blue_work` is already trimmed (9 bytes, not padded), but the golden
+  values are even-length, so they cannot tell the two trimming rules apart.
 - `verboseData.isChainBlock` for accepted chain blocks (assumed: the block appears as
   `block_hash` in `transactions_acceptances`), and `childrenHashes` on a block with children.
 - Transaction order inside a block: the schema stores no index; currently coinbase
