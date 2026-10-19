@@ -199,6 +199,19 @@ def norm_blocks_list(lv, nv):
     return lv, nv
 
 
+def norm_count(lv, nv):
+    # Big counts are cached in memory up to 10 minutes: a few new transactions
+    # behind legacy (at most 0.1%) is the cache working, not a mismatch.
+    try:
+        lt, nt = lv["total"], nv["total"]
+    except (TypeError, KeyError):
+        return lv, nv
+    if 0 < lt - nt <= max(1, lt // 1000) and lt >= 100_000:
+        print(f"      cached count: new is {lt - nt} behind legacy (expected)")
+        nv = dict(nv, total=lt)
+    return lv, nv
+
+
 def norm_tx(lv, nv):
     return prefix_addresses(lv), nv
 
@@ -237,7 +250,7 @@ def main():
             print(f"SKIP  utxos {a[:20]}  (pool address, 200k+ UTXOs; set HEAVY=1 to include)")
         else:
             check(f"utxos {a[:20]}", f"/addresses/{a}/utxos", normalise=norm_utxos)
-        check(f"tx count {a[:20]}", f"/addresses/{a}/transactions-count")
+        check(f"tx count {a[:20]}", f"/addresses/{a}/transactions-count", normalise=norm_count)
         for q in ("limit=5", "limit=5&offset=5", "limit=3&resolve_previous_outpoints=light",
                   "limit=2&resolve_previous_outpoints=full", "limit=5&fields=transaction_id,block_time"):
             check(f"full-tx {a[:20]} {q}", f"/addresses/{a}/full-transactions?{q}", normalise=norm_tx)

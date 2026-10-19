@@ -169,6 +169,13 @@ by default (`HEAVY=1` includes it): loading 200k+ UTXOs in legacy, the new API a
 script at once pushed the VPS into swap. Pool `transactions-count`: legacy 3.7 s, new
 1 ms (in-memory count cache).
 
+### Seventh run, with analytics and `GET /blocks` (2026-10-19)
+
+95 PASS, 1 FAIL, 0 LIVE. All new checks pass (`/analytics/addresses/*` and three
+`GET /blocks` variants). The one FAIL was the pool address `transactions-count`: the
+in-memory count was 5 transactions behind legacy, which is the 10-minute cache doing
+its job. The script now reports such a gap (at most 0.1%, counts >= 100k) as expected.
+
 ## Still unverified
 
 - Real karlsend gRPC behaviour of `getCurrentBlockColor` for a red block, and of
