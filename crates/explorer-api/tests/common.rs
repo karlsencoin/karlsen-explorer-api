@@ -92,6 +92,9 @@ impl Reply {
     pub fn json(&self) -> serde_json::Value {
         serde_json::from_slice(&self.body).unwrap_or(serde_json::Value::Null)
     }
+    pub fn header(&self, name: &str) -> Option<&str> {
+        self.headers.get(name).and_then(|v| v.to_str().ok())
+    }
     pub fn data_source(&self) -> Option<&str> {
         self.headers
             .get("x-data-source")

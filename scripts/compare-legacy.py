@@ -148,6 +148,19 @@ def norm_halving(lv, nv):
     return lv, nv
 
 
+def norm_dag_window(lv, nv):
+    # Legacy leaves the order of equal DAA scores to Postgres and a LIMIT can cut a
+    # tie group differently: sort by (daa, hash) and drop the newest score on both.
+    if not (isinstance(lv, dict) and isinstance(nv, dict)):
+        return lv, nv
+    top = max([b["daaScore"] for v in (lv, nv) for b in v.get("blocks", [])], default=None)
+    for v in (lv, nv):
+        v["blocks"] = sorted((b for b in v.get("blocks", []) if b["daaScore"] != top),
+                             key=lambda b: (b["daaScore"], b["hash"]))
+        v["count"] = v["newestDaa"] = v["oldestDaa"] = None
+    return lv, nv
+
+
 def norm_tx(lv, nv):
     return prefix_addresses(lv), nv
 
@@ -207,6 +220,19 @@ def main():
                  "/info/price", "/info/price?stringOnly=true", "/info/market-data"):
         check(path, path)
     check("/info/halving (amount, date to the minute)", "/info/halving", normalise=norm_halving)
+
+    print("-- dag-window (database)")
+    old_daa = int(blocks[-1]["header"]["daaScore"]) - 10
+    check("dag-window since_daa (deep, 50 blocks)", f"/info/dag-window?since_daa={old_daa}&limit=50",
+          normalise=norm_dag_window)
+    check("dag-window shape", "/info/dag-window?since_daa=999999999999")
+
+    print("-- miners (KGI tracker; refreshed every snapshot, so LIVE is possible)")
+    check("/info/miners/network", "/info/miners/network")
+    top = check("/info/miners/top", "/info/miners/top")
+    check("/info/miners/top?limit=5&recent_hours=0", "/info/miners/top?limit=5&recent_hours=0")
+    for m in ((top or {}).get("miners") or [])[:2]:
+        check(f"miner detail {m['address'][:20]}", f"/info/miners/address/{m['address']}?hours=6")
 
     print("-- intended differences (new behaviour checked, legacy shown)")
     bad = ADDRESSES[0][:-1] + ("q" if ADDRESSES[0][-1] != "q" else "p")

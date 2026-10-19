@@ -9,8 +9,10 @@ use crate::AppState;
 pub mod address_transactions;
 pub mod addresses;
 pub mod blocks;
+pub mod dag_window;
 pub mod health;
 pub mod info;
+pub mod miners;
 pub mod transactions;
 
 pub fn router(state: AppState) -> Router {
@@ -27,6 +29,10 @@ pub fn router(state: AppState) -> Router {
         .route("/info/karlsend", get(info::karlsend))
         .route("/info/price", get(info::price))
         .route("/info/market-data", get(info::market_data))
+        .route("/info/dag-window", get(dag_window::dag_window))
+        .route("/info/miners/top", get(miners::miners_top))
+        .route("/info/miners/network", get(miners::miners_network))
+        .route("/info/miners/address/{address}", get(miners::miner_detail))
         .route("/blocks/{block_id}", get(blocks::get_block))
         .route("/addresses/{address}/balance", get(addresses::get_balance))
         .route("/addresses/{address}/utxos", get(addresses::get_utxos))

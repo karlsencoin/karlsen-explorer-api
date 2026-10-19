@@ -152,6 +152,15 @@ decision (per-address counter table, cap or paging) before cut-over.
 production, including `price` / `market-data` through the real NonKYC ticker. Node-backed
 `/info` answers take 1–2 ms (legacy 2–7 ms).
 
+### Fifth run, with `dag-window` and `miners` (2026-10-19)
+
+79 PASS, 0 FAIL, 3 LIVE: the pool address (UTXO list, transaction count) and
+`/info/miners/top`, whose tracker snapshot moved during the check (`ts_ms` changed
+between the two legacy answers). `dag-window` matches legacy on a 50-block window deep
+behind the tip; `miners/network`, `miners/top?limit=5&recent_hours=0` and two
+`miners/address` details match exactly. Both services read the same tracker file
+(`/opt/karlsen/kgi` is bind-mounted into the legacy container at the same path).
+
 ## Still unverified
 
 - Real karlsend gRPC behaviour of `getCurrentBlockColor` for a red block, and of

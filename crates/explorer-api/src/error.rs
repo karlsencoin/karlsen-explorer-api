@@ -16,6 +16,8 @@ pub enum ApiError {
     #[error("{0}")]
     Validation(String),
     #[error("{0}")]
+    BadRequest(&'static str),
+    #[error("{0}")]
     NotFound(&'static str),
     #[error("{0}")]
     NotImplemented(&'static str),
@@ -23,6 +25,9 @@ pub enum ApiError {
     Database(#[from] sqlx::Error),
     #[error("node error")]
     Node(#[from] crate::node::NodeError),
+    /// The KGI tracker's SQLite file could not be read.
+    #[error("tracker database error")]
+    Tracker(#[from] rusqlite::Error),
     /// A dependency this endpoint needs is not configured (e.g. no karlsend).
     #[error("{0}")]
     Unavailable(&'static str),
@@ -32,6 +37,7 @@ impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         let (status, detail) = match &self {
             ApiError::Validation(m) => (StatusCode::UNPROCESSABLE_ENTITY, m.clone()),
+            ApiError::BadRequest(m) => (StatusCode::BAD_REQUEST, (*m).to_string()),
             ApiError::NotFound(m) => (StatusCode::NOT_FOUND, (*m).to_string()),
             ApiError::NotImplemented(m) => (StatusCode::NOT_IMPLEMENTED, (*m).to_string()),
             ApiError::Database(e) => {
@@ -44,6 +50,13 @@ impl IntoResponse for ApiError {
             }
             ApiError::Node(e) => {
                 tracing::error!(error = %e, "node error");
+                (
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "Service temporarily unavailable".to_string(),
+                )
+            }
+            ApiError::Tracker(e) => {
+                tracing::error!(error = %e, "tracker database error");
                 (
                     StatusCode::SERVICE_UNAVAILABLE,
                     "Service temporarily unavailable".to_string(),

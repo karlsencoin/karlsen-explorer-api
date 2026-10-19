@@ -75,3 +75,5 @@ legacy responses in `tests/fixtures/golden-*.json`.
 | `GET /info/blockreward`, `/info/halving` | Karlsen emission table (`src/emission.rs`), `stringOnly`, `field` |
 | `GET /info/karlsend` | node; P2P id only as SHA-256 |
 | `GET /info/price`, `/info/market-data` | NonKYC KLS/USDT ticker, cached 60 s; last good value if NonKYC fails, 503 if none |
+| `GET /info/dag-window` | database; newest `limit` (1..1000, default 200) blocks, or blocks after `since_daa` (ascending, `no-store`) |
+| `GET /info/miners/top`, `/info/miners/network`, `/info/miners/address/{address}` | KGI reward tracker SQLite (`KGI_TRACKER_DB`), opened read-only; `limit`, `recent_hours`, `hours` |
