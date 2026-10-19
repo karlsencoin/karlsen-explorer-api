@@ -14,6 +14,7 @@ Only the Python standard library is used; nothing is written to disk.
 
 import json
 import sys
+import time
 import urllib.error
 import urllib.request
 
@@ -25,10 +26,22 @@ ADDRESSES = [
     "karlsen:qzsflg24vlkuhqzgjm2v39rkmhjg8e3qwtaylccpxqu97n72vx0s7faphh8a7",
 ]
 
-results = {"pass": 0, "fail": 0}
+results = {"pass": 0, "fail": 0, "live": 0}
+SLOW_MS = 1000
 
 
 def call(base, path, body=None):
+    status, value, _ = timed_call(base, path, body)
+    return status, value
+
+
+def timed_call(base, path, body=None):
+    t0 = time.monotonic()
+    status, value = _call(base, path, body)
+    return status, value, int((time.monotonic() - t0) * 1000)
+
+
+def _call(base, path, body=None):
     data = json.dumps(body).encode() if body is not None else None
     req = urllib.request.Request(base + path, data=data, method="POST" if data else "GET")
     if data:
@@ -81,9 +94,11 @@ def prefix_addresses(v):
 
 
 def check(name, path, body=None, normalise=None, expect_status=None):
-    for attempt in range(2):  # live data can move between the two calls; retry once
-        ls, lv = call(LEGACY, path, body)
-        ns, nv = call(NEW, path, body)
+    """PASS / FAIL, or LIVE when legacy itself changed while checking (busy address)."""
+    verdict = "FAIL"
+    for attempt in range(2):  # retry once in case data moved between the calls
+        ls, lv, lms = timed_call(LEGACY, path, body)
+        ns, nv, nms = timed_call(NEW, path, body)
         if normalise:
             lv, nv = normalise(lv, nv)
         if expect_status is not None:
@@ -92,9 +107,20 @@ def check(name, path, body=None, normalise=None, expect_status=None):
             diff = first_diff(lv, nv) if ls == ns else f"status legacy={ls} new={ns}"
             ok, why = diff is None, diff
         if ok:
+            verdict = "PASS"
             break
-    results["pass" if ok else "fail"] += 1
-    print(f"{'PASS' if ok else 'FAIL'}  {name}" + ("" if ok else f"\n      {why}"))
+    if verdict == "FAIL" and expect_status is None:
+        # Ask legacy again: if its own answer moved, the data is live, not wrong.
+        ls2, lv2 = call(LEGACY, path, body)
+        if normalise:
+            lv2, _ = normalise(lv2, nv)
+        if ls2 == ls and first_diff(lv, lv2) is not None:
+            verdict = "LIVE"
+            why = f"data changed during the check (legacy before vs after: {first_diff(lv, lv2)})"
+    results[verdict.lower()] += 1
+    timing = f"legacy {lms} ms, new {nms} ms"
+    slow = " SLOW" if max(lms, nms) >= SLOW_MS else ""
+    print(f"{verdict:<5} {name}  ({timing}){slow}" + ("" if verdict == "PASS" else f"\n      {why}"))
     return nv
 
 
@@ -166,7 +192,8 @@ def main():
     bad = ADDRESSES[0][:-1] + ("q" if ADDRESSES[0][-1] != "q" else "p")
     check("bad checksum is 422", f"/addresses/{bad}/balance", expect_status=422)
 
-    print(f"\n{results['pass']} passed, {results['fail']} failed")
+    print(f"\n{results['pass']} passed, {results['fail']} failed, "
+          f"{results['live']} live (data moved while checking; not a mismatch)")
     sys.exit(1 if results["fail"] else 0)
 
 
