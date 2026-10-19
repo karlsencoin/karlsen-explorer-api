@@ -1,20 +1,34 @@
 //! `GET /blocks/{blockId}` — wire-compatible with legacy `rest-v2`.
+//!
+//! Same strategy as the Kaspa REST server: ask karlsend first, because only the
+//! node has every parent level, the real transaction `mass` and the block color.
+//! When the node does not have the block (pruned, header only, or the node is
+//! down), the response is built from the database and marked with
+//! `X-Data-Source: Database`. See docs/VERIFY.md for what differs in that case.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use axum::{
     extract::{Path, Query, State},
+    http::{HeaderMap, HeaderValue},
     Json,
 };
 use serde::{Deserialize, Serialize};
-use sqlx::FromRow;
+use sqlx::{FromRow, PgPool};
 
 use crate::{
     address::{script_to_address, script_type, MAINNET_PREFIX},
     difficulty::difficulty_from_bits,
     error::ApiError,
+    miner::parse_coinbase_payload,
+    node::{proto, NodeClient},
     AppState,
 };
+
+const COINBASE_SUBNETWORK: &str = "0100000000000000000000000000000000000000";
+/// Upper bound on blocks visited when looking for the chain block that merged a
+/// block (database color lookup).
+const COLOR_SEARCH_LIMIT: usize = 64;
 
 #[derive(Debug, Deserialize)]
 pub struct BlockQuery {
@@ -73,6 +87,14 @@ struct OutputRow {
     script_public_key: Option<Vec<u8>>,
 }
 
+#[derive(Debug, FromRow)]
+struct MergeRow {
+    hash: Vec<u8>,
+    merge_set_blues_hashes: Option<Vec<Vec<u8>>>,
+    merge_set_reds_hashes: Option<Vec<Vec<u8>>>,
+    is_chain: bool,
+}
+
 // ---- response model (field names follow the legacy OpenAPI document) ----
 
 #[derive(Debug, Serialize)]
@@ -85,11 +107,10 @@ pub struct BlockModel {
     extra: Extra,
 }
 
-/// Always present in legacy responses; the golden capture (no `includeColor`)
-/// shows all three keys as `null`.
+/// Always present in legacy responses.
 #[derive(Debug, Default, Serialize)]
 struct Extra {
-    color: Option<String>,
+    color: Option<&'static str>,
     #[serde(rename = "minerAddress")]
     miner_address: Option<String>,
     #[serde(rename = "minerInfo")]
@@ -155,8 +176,8 @@ struct TxModel {
     #[serde(rename = "verboseData")]
     verbose_data: TxVerbose,
     #[serde(rename = "lockTime")]
-    lock_time: i64,
-    gas: i64,
+    lock_time: u64,
+    gas: u64,
     mass: i64,
     version: i32,
 }
@@ -169,7 +190,7 @@ struct InputModel {
     signature_script: String,
     #[serde(rename = "sigOpCount")]
     sig_op_count: i32,
-    sequence: i64,
+    sequence: u64,
 }
 
 #[derive(Debug, Serialize)]
@@ -216,6 +237,8 @@ struct TxVerbose {
     block_time: i64,
 }
 
+// ---- helpers ----
+
 fn hx(b: &Option<Vec<u8>>) -> String {
     b.as_deref().map(hex::encode).unwrap_or_default()
 }
@@ -224,15 +247,19 @@ fn hx_all(v: &Option<Vec<Vec<u8>>>) -> Vec<String> {
     v.iter().flatten().map(hex::encode).collect()
 }
 
-/// Big-endian bytes without leading zero bytes, as lowercase hex.
-fn trimmed_hex(b: &Option<Vec<u8>>) -> String {
-    let h = hx(b);
+/// Lowercase hex without leading zeros (`"0"` for zero).
+fn trim_hex(h: &str) -> String {
     let t = h.trim_start_matches('0');
     if t.is_empty() {
         "0".to_string()
     } else {
         t.to_string()
     }
+}
+
+/// Big-endian bytes without leading zero bytes, as lowercase hex.
+fn trimmed_hex(b: &Option<Vec<u8>>) -> String {
+    trim_hex(&hx(b))
 }
 
 fn nonce_decimal(b: &Option<Vec<u8>>) -> String {
@@ -271,11 +298,30 @@ fn output_model(amount: i64, script: &[u8]) -> OutputModel {
     }
 }
 
+/// Miner address and tag from the coinbase payload (first coinbase transaction).
+fn miner_from_transactions(txs: &[TxModel]) -> (Option<String>, Option<String>) {
+    txs.iter()
+        .find(|t| t.subnetwork_id == COINBASE_SUBNETWORK)
+        .and_then(|t| hex::decode(&t.payload).ok())
+        .and_then(|p| parse_coinbase_payload(&p))
+        .map_or((None, None), |(a, i)| (Some(a), Some(i)))
+}
+
+fn color_name(blue: bool) -> &'static str {
+    if blue {
+        "blue"
+    } else {
+        "red"
+    }
+}
+
+// ---- handler ----
+
 pub async fn get_block(
     State(state): State<AppState>,
     Path(block_id): Path<String>,
     Query(q): Query<BlockQuery>,
-) -> Result<Json<BlockModel>, ApiError> {
+) -> Result<(HeaderMap, Json<BlockModel>), ApiError> {
     if block_id.len() != 64
         || !block_id
             .bytes()
@@ -285,14 +331,160 @@ pub async fn get_block(
             "blockId must be 64 lowercase hex characters".into(),
         ));
     }
-    if q.include_color {
-        return Err(ApiError::NotImplemented(
-            "includeColor is not implemented yet",
-        ));
+
+    let mut headers = HeaderMap::new();
+    if let Some(node) = &state.node {
+        match node.get_block(&block_id, q.include_transactions).await {
+            Ok(Some(block)) => {
+                let mut model = block_from_node(block, q.include_transactions);
+                if q.include_color {
+                    model.extra.color = color_from_node(node, &model).await;
+                }
+                return Ok((headers, Json(model)));
+            }
+            Ok(None) => {}
+            Err(e) => tracing::warn!(error = %e, "karlsend unavailable, using the database"),
+        }
     }
-    let hash =
-        hex::decode(&block_id).map_err(|_| ApiError::Validation("invalid blockId".into()))?;
-    let db = &state.db;
+
+    let mut model = block_from_db(&state.db, &block_id, q.include_transactions).await?;
+    if q.include_color {
+        model.extra.color = if model.verbose_data.is_chain_block {
+            Some("blue")
+        } else {
+            color_from_db(&state.db, &block_id).await?
+        };
+    }
+    headers.insert("x-data-source", HeaderValue::from_static("Database"));
+    Ok((headers, Json(model)))
+}
+
+// ---- node path ----
+
+async fn color_from_node(node: &NodeClient, model: &BlockModel) -> Option<&'static str> {
+    if model.verbose_data.is_chain_block {
+        return Some("blue");
+    }
+    match node.get_current_block_color(&model.verbose_data.hash).await {
+        Ok(blue) => blue.map(color_name),
+        Err(e) => {
+            tracing::warn!(error = %e, "block color lookup failed");
+            None
+        }
+    }
+}
+
+fn block_from_node(block: proto::RpcBlock, include_transactions: bool) -> BlockModel {
+    let h = block.header.unwrap_or_default();
+    let v = block.verbose_data.unwrap_or_default();
+
+    let transactions = include_transactions.then(|| {
+        block
+            .transactions
+            .into_iter()
+            .map(tx_from_node)
+            .collect::<Vec<_>>()
+    });
+    let (miner_address, miner_info) = transactions
+        .as_deref()
+        .map_or((None, None), miner_from_transactions);
+
+    BlockModel {
+        header: Header {
+            version: h.version as i32,
+            hash_merkle_root: h.hash_merkle_root,
+            accepted_id_merkle_root: h.accepted_id_merkle_root,
+            utxo_commitment: h.utxo_commitment,
+            timestamp: h.timestamp.to_string(),
+            bits: h.bits as i64,
+            nonce: h.nonce.to_string(),
+            daa_score: h.daa_score.to_string(),
+            blue_work: trim_hex(&h.blue_work),
+            parents: h
+                .parents
+                .into_iter()
+                .map(|p| ParentHashes {
+                    parent_hashes: p.parent_hashes,
+                })
+                .collect(),
+            blue_score: h.blue_score.to_string(),
+            pruning_point: h.pruning_point,
+        },
+        transactions,
+        verbose_data: VerboseData {
+            hash: v.hash,
+            difficulty: v.difficulty,
+            selected_parent_hash: v.selected_parent_hash,
+            transaction_ids: v.transaction_ids,
+            blue_score: v.blue_score.to_string(),
+            children_hashes: v.children_hashes,
+            merge_set_blues_hashes: v.merge_set_blues_hashes,
+            merge_set_reds_hashes: v.merge_set_reds_hashes,
+            is_chain_block: v.is_chain_block,
+        },
+        extra: Extra {
+            color: None,
+            miner_address,
+            miner_info,
+        },
+    }
+}
+
+fn tx_from_node(tx: proto::RpcTransaction) -> TxModel {
+    let v = tx.verbose_data.unwrap_or_default();
+    TxModel {
+        inputs: tx
+            .inputs
+            .into_iter()
+            .map(|i| {
+                let o = i.previous_outpoint.unwrap_or_default();
+                InputModel {
+                    previous_outpoint: Outpoint {
+                        transaction_id: o.transaction_id,
+                        index: o.index as i32,
+                    },
+                    signature_script: i.signature_script,
+                    sig_op_count: i.sig_op_count as i32,
+                    sequence: i.sequence,
+                }
+            })
+            .collect(),
+        outputs: tx
+            .outputs
+            .into_iter()
+            .map(|o| {
+                let script_hex = o
+                    .script_public_key
+                    .map(|s| s.script_public_key)
+                    .unwrap_or_default();
+                let script = hex::decode(&script_hex).unwrap_or_default();
+                output_model(o.amount as i64, &script)
+            })
+            .collect(),
+        subnetwork_id: tx.subnetwork_id,
+        payload: tx.payload,
+        verbose_data: TxVerbose {
+            transaction_id: v.transaction_id,
+            hash: v.hash,
+            compute_mass: v.compute_mass as i64,
+            block_hash: v.block_hash,
+            block_time: v.block_time as i64,
+        },
+        lock_time: tx.lock_time,
+        gas: tx.gas,
+        mass: tx.mass as i64,
+        version: tx.version as i32,
+    }
+}
+
+// ---- database path ----
+
+async fn block_from_db(
+    db: &PgPool,
+    block_id: &str,
+    include_transactions: bool,
+) -> Result<BlockModel, ApiError> {
+    let hash = hex::decode(block_id).map_err(|_| ApiError::Validation("invalid blockId".into()))?;
 
     let block: BlockRow = sqlx::query_as(
         r#"SELECT hash, accepted_id_merkle_root, merge_set_blues_hashes, merge_set_reds_hashes,
@@ -336,11 +528,14 @@ pub async fn get_block(
     .fetch_all(db)
     .await?;
 
-    let transactions = if q.include_transactions {
+    let transactions = if include_transactions {
         Some(build_transactions(db, &hash, &txs).await?)
     } else {
         None
     };
+    let (miner_address, miner_info) = transactions
+        .as_deref()
+        .map_or((None, None), miner_from_transactions);
 
     let bits = block.bits.unwrap_or_default();
     let blue_score = block.blue_score.unwrap_or_default().to_string();
@@ -353,7 +548,7 @@ pub async fn get_block(
     let mut children_hashes: Vec<String> = children.iter().map(|c| hex::encode(&c.0)).collect();
     children_hashes.sort();
 
-    Ok(Json(BlockModel {
+    Ok(BlockModel {
         header: Header {
             version: block.version.unwrap_or_default() as i32,
             hash_merkle_root: hx(&block.hash_merkle_root),
@@ -364,6 +559,7 @@ pub async fn get_block(
             nonce: nonce_decimal(&block.nonce),
             daa_score: block.daa_score.unwrap_or_default().to_string(),
             blue_work: trimmed_hex(&block.blue_work),
+            // Only level 0 is stored.
             parents: vec![ParentHashes { parent_hashes }],
             blue_score: blue_score.clone(),
             pruning_point: hx(&block.pruning_point),
@@ -380,12 +576,66 @@ pub async fn get_block(
             merge_set_reds_hashes: hx_all(&block.merge_set_reds_hashes),
             is_chain_block: is_chain,
         },
-        extra: Extra::default(),
-    }))
+        extra: Extra {
+            color: None,
+            miner_address,
+            miner_info,
+        },
+    })
+}
+
+/// Color of a non-chain block from the database: walks the block's future level by
+/// level until a chain block lists it in its merge set. Kaspa only checks direct
+/// children; a merging chain block can sit deeper, so this searches a bounded
+/// number of blocks instead. `None` if not found (not merged yet, or out of range).
+async fn color_from_db(db: &PgPool, block_id: &str) -> Result<Option<&'static str>, ApiError> {
+    let target =
+        hex::decode(block_id).map_err(|_| ApiError::Validation("invalid blockId".into()))?;
+    let mut frontier = vec![target.clone()];
+    let mut seen: HashSet<Vec<u8>> = HashSet::new();
+
+    while !frontier.is_empty() && seen.len() < COLOR_SEARCH_LIMIT {
+        let rows: Vec<MergeRow> = sqlx::query_as(
+            r#"SELECT b.hash, b.merge_set_blues_hashes, b.merge_set_reds_hashes,
+                      EXISTS (SELECT 1 FROM transactions_acceptances ta
+                              WHERE ta.block_hash = b.hash) AS is_chain
+               FROM block_parent bp
+               JOIN blocks b ON b.hash = bp.block_hash
+               WHERE bp.parent_hash = ANY($1)"#,
+        )
+        .bind(&frontier)
+        .fetch_all(db)
+        .await?;
+
+        frontier.clear();
+        for r in rows {
+            if !seen.insert(r.hash.clone()) {
+                continue;
+            }
+            if r.is_chain {
+                if r.merge_set_blues_hashes
+                    .iter()
+                    .flatten()
+                    .any(|h| *h == target)
+                {
+                    return Ok(Some("blue"));
+                }
+                if r.merge_set_reds_hashes
+                    .iter()
+                    .flatten()
+                    .any(|h| *h == target)
+                {
+                    return Ok(Some("red"));
+                }
+            }
+            frontier.push(r.hash);
+        }
+    }
+    Ok(None)
 }
 
 async fn build_transactions(
-    db: &sqlx::PgPool,
+    db: &PgPool,
     block_hash: &[u8],
     txs: &[TxRow],
 ) -> Result<Vec<TxModel>, ApiError> {
@@ -424,6 +674,7 @@ async fn build_transactions(
             },
             signature_script: hx(&r.signature_script),
             sig_op_count: r.sig_op_count.unwrap_or_default() as i32,
+            // Not stored; 0 in every captured legacy response.
             sequence: 0,
         });
     }
@@ -451,6 +702,7 @@ async fn build_transactions(
             },
             lock_time: 0,
             gas: 0,
+            // Only one mass is stored (the compute mass); see docs/VERIFY.md.
             mass: t.mass.unwrap_or_default() as i64,
             version: 0,
         })
@@ -536,6 +788,12 @@ mod tests {
         let h = &g["header"];
         let vd = &g["verboseData"];
         let bits = h["bits"].as_i64().unwrap();
+        let mut transactions: Option<Vec<TxModel>> = g["transactions"]
+            .as_array()
+            .map(|txs| txs.iter().map(tx_from_golden).collect());
+        let (miner_address, miner_info) = transactions
+            .as_deref()
+            .map_or((None, None), miner_from_transactions);
 
         // Simulate the stored column values: 8-byte big-endian nonce and blue work as
         // trimmed big-endian bytes.
@@ -569,9 +827,7 @@ mod tests {
                 blue_score: st(&h["blueScore"]),
                 pruning_point: st(&h["pruningPoint"]),
             },
-            transactions: g["transactions"]
-                .as_array()
-                .map(|txs| txs.iter().map(tx_from_golden).collect()),
+            transactions: transactions.take(),
             verbose_data: VerboseData {
                 hash: st(&vd["hash"]),
                 difficulty: difficulty_from_bits(bits as u32),
@@ -584,9 +840,11 @@ mod tests {
                 is_chain_block: vd["isChainBlock"].as_bool().unwrap(),
             },
             extra: Extra {
-                color: g["extra"]["color"].as_str().map(str::to_string),
-                miner_address: g["extra"]["minerAddress"].as_str().map(str::to_string),
-                miner_info: g["extra"]["minerInfo"].as_str().map(str::to_string),
+                color: g["extra"]["color"]
+                    .as_str()
+                    .map(|c| color_name(c == "blue")),
+                miner_address,
+                miner_info,
             },
         }
     }
@@ -616,6 +874,16 @@ mod tests {
             .as_array_mut()
             .unwrap()
             .truncate(1);
+        // Legacy rest-v2 leaves these null; we decode them from the coinbase payload
+        // (Kaspa does the same). Only checked when the block has transactions.
+        if want["transactions"].is_array() {
+            assert_eq!(
+                got["extra"]["minerAddress"],
+                want["transactions"][0]["outputs"][0]["verboseData"]["scriptPublicKeyAddress"]
+            );
+            want["extra"]["minerAddress"] = got["extra"]["minerAddress"].clone();
+            want["extra"]["minerInfo"] = got["extra"]["minerInfo"].clone();
+        }
 
         assert_eq!(got, want);
     }

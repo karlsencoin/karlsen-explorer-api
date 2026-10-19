@@ -18,6 +18,16 @@ for what must be checked against the live legacy API before cut-over.
 - **Configuration only through environment variables.** No credentials, e-mail
   addresses or hostnames live in this repository (see `.env.example`).
 
+## Data sources
+
+Like the Kaspa REST server, block lookups ask **karlsend** first (gRPC,
+`KARLSEND_GRPC_URL`): only the node has every parent level, the real transaction
+`mass` and the block color. If the node does not have the block (pruned, header only)
+or cannot be reached within `NODE_TIMEOUT_MS`, the response is built from **Postgres**
+and carries `X-Data-Source: Database`. The gRPC client is generated from the vendored
+rusty-karlsen protos in `crates/explorer-api/proto/` (ISC, see `NOTICE.md`); no
+`protoc` is needed to build.
+
 ## Run
 
 ```sh
@@ -34,11 +44,13 @@ Unit tests need nothing. Integration tests create a throw-away database from
 TEST_DATABASE_URL=postgres://USER@127.0.0.1:5432/postgres cargo test
 ```
 
-Without `TEST_DATABASE_URL` the integration tests skip themselves.
+Without `TEST_DATABASE_URL` the database tests skip themselves. The node tests
+(`tests/node.rs`) need nothing: they run a mock karlsend that replays the captured
+legacy responses in `tests/fixtures/golden-*.json`.
 
 ## Implemented so far
 
 | Endpoint | Notes |
 |---|---|
 | `GET /info/health` | 200 only if the database answers, otherwise 503 |
-| `GET /blocks/{blockId}` | `includeTransactions`; `includeColor` returns 501 for now |
+| `GET /blocks/{blockId}` | Node first, database fallback (`X-Data-Source: Database`); `includeTransactions`, `includeColor` |

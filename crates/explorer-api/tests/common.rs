@@ -3,7 +3,7 @@
 //! name needed beyond a connectable one). Tests are skipped when it is unset.
 
 use axum::Router;
-use karlsen_explorer_api::{routes, AppState};
+use karlsen_explorer_api::{node::NodeClient, routes, AppState};
 use sqlx::{postgres::PgPoolOptions, Executor, PgPool};
 
 pub struct TestDb {
@@ -66,6 +66,13 @@ impl TestDb {
     pub fn app(&self) -> Router {
         routes::router(AppState {
             db: self.pool.clone(),
+            node: None,
+        })
+    }
+    pub fn app_with_node(&self, node: NodeClient) -> Router {
+        routes::router(AppState {
+            db: self.pool.clone(),
+            node: Some(node),
         })
     }
     pub async fn teardown(self) {
@@ -77,7 +84,24 @@ impl TestDb {
     }
 }
 
-pub async fn get(app: &Router, uri: &str) -> (u16, serde_json::Value) {
+pub struct Reply {
+    pub status: u16,
+    pub headers: axum::http::HeaderMap,
+    pub body: Vec<u8>,
+}
+
+impl Reply {
+    pub fn json(&self) -> serde_json::Value {
+        serde_json::from_slice(&self.body).unwrap_or(serde_json::Value::Null)
+    }
+    pub fn data_source(&self) -> Option<&str> {
+        self.headers
+            .get("x-data-source")
+            .and_then(|v| v.to_str().ok())
+    }
+}
+
+pub async fn request(app: &Router, uri: &str) -> Reply {
     use axum::{body::Body, http::Request};
     use http_body_util::BodyExt;
     use tower::ServiceExt;
@@ -87,9 +111,30 @@ pub async fn get(app: &Router, uri: &str) -> (u16, serde_json::Value) {
         .await
         .unwrap();
     let status = resp.status().as_u16();
-    let bytes = resp.into_body().collect().await.unwrap().to_bytes();
-    (
+    let headers = resp.headers().clone();
+    let body = resp
+        .into_body()
+        .collect()
+        .await
+        .unwrap()
+        .to_bytes()
+        .to_vec();
+    Reply {
         status,
-        serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null),
-    )
+        headers,
+        body,
+    }
+}
+
+pub async fn get(app: &Router, uri: &str) -> (u16, serde_json::Value) {
+    let r = request(app, uri).await;
+    (r.status, r.json())
+}
+
+/// A pool that never connects: proves a code path does not touch the database.
+pub fn dead_pool() -> PgPool {
+    PgPoolOptions::new()
+        .acquire_timeout(std::time::Duration::from_millis(300))
+        .connect_lazy("postgres://u:p@127.0.0.1:1/none")
+        .unwrap()
 }

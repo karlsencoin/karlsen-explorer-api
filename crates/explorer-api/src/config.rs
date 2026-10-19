@@ -1,13 +1,17 @@
 //! Configuration is read from environment variables only. No defaults carry
 //! credentials, and nothing here is ever logged.
 
-use std::net::SocketAddr;
+use std::{net::SocketAddr, time::Duration};
 
 #[derive(Debug, Clone)]
 pub struct Config {
     pub database_url: String,
     pub listen_addr: SocketAddr,
     pub db_max_connections: u32,
+    /// karlsend gRPC endpoint, e.g. `http://127.0.0.1:42110`. Optional: without it
+    /// every response comes from the database.
+    pub karlsend_grpc_url: Option<String>,
+    pub node_timeout: Duration,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -30,10 +34,20 @@ impl Config {
             .unwrap_or_else(|_| "16".to_string())
             .parse()
             .map_err(|_| ConfigError::Invalid("DB_MAX_CONNECTIONS"))?;
+        let karlsend_grpc_url = std::env::var("KARLSEND_GRPC_URL")
+            .ok()
+            .filter(|s| !s.is_empty());
+        let node_timeout = std::env::var("NODE_TIMEOUT_MS")
+            .unwrap_or_else(|_| "10000".to_string())
+            .parse()
+            .map(Duration::from_millis)
+            .map_err(|_| ConfigError::Invalid("NODE_TIMEOUT_MS"))?;
         Ok(Self {
             database_url,
             listen_addr,
             db_max_connections,
+            karlsend_grpc_url,
+            node_timeout,
         })
     }
 }

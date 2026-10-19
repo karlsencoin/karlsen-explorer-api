@@ -1,4 +1,4 @@
-use karlsen_explorer_api::{config::Config, routes, AppState};
+use karlsen_explorer_api::{config::Config, node::NodeClient, routes, AppState};
 use sqlx::postgres::PgPoolOptions;
 use tracing_subscriber::EnvFilter;
 
@@ -14,7 +14,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .connect(&config.database_url)
         .await?;
 
-    let app = routes::router(AppState { db });
+    let node = match &config.karlsend_grpc_url {
+        Some(url) => Some(NodeClient::new(url, config.node_timeout)?),
+        None => {
+            tracing::warn!("KARLSEND_GRPC_URL not set: serving everything from the database");
+            None
+        }
+    };
+
+    let app = routes::router(AppState { db, node });
     let listener = tokio::net::TcpListener::bind(config.listen_addr).await?;
     tracing::info!(addr = %config.listen_addr, "listening");
     axum::serve(listener, app)

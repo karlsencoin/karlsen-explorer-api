@@ -1,5 +1,9 @@
+#[allow(dead_code)]
 mod common;
-use common::{get, setup};
+use std::time::Duration;
+
+use common::{get, request, setup};
+use karlsen_explorer_api::node::NodeClient;
 
 const BLOCK: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const CB_ADDR: &str = "karlsen:qpjnywfxsdrj3nkuscf4mc0m457wt35sgfgfv379zuuekl6z0ulwkkgayg83r";
@@ -97,8 +101,49 @@ async fn unknown_block_is_404_and_bad_id_is_422() {
     assert_eq!((s, v["detail"].as_str()), (404, Some("Block not found")));
     let (s, _) = get(&app, "/blocks/not-a-hash").await;
     assert_eq!(s, 422);
-    let (s, _) = get(&app, &format!("/blocks/{BLOCK}?includeColor=true")).await;
-    assert_eq!(s, 501);
+    db.teardown().await;
+}
+
+#[tokio::test]
+async fn database_responses_are_marked_and_carry_miner_info() {
+    let db = db_or_skip!();
+    let r = request(&db.app(), &format!("/blocks/{BLOCK}")).await;
+    assert_eq!(r.status, 200);
+    assert_eq!(r.data_source(), Some("Database"));
+    let v = r.json();
+    // Decoded from the seeded coinbase payload, which is not a valid layout.
+    assert_eq!(v["extra"]["minerAddress"], serde_json::Value::Null);
+    db.teardown().await;
+}
+
+#[tokio::test]
+async fn color_from_database() {
+    let db = db_or_skip!();
+    let app = db.app();
+    let color = |id: &str| {
+        let app = app.clone();
+        let uri = format!("/blocks/{id}?includeColor=true&includeTransactions=false");
+        async move { get(&app, &uri).await.1["extra"]["color"].clone() }
+    };
+    // Chain block.
+    assert_eq!(color(BLOCK).await, "blue");
+    // Merged as red by its direct chain child.
+    assert_eq!(color(&"d1".repeat(32)).await, "red");
+    // Merged as blue by a chain block two levels down.
+    assert_eq!(color(&"f1".repeat(32)).await, "blue");
+    // Not merged by any chain block in the database.
+    assert_eq!(color(&"f2".repeat(32)).await, serde_json::Value::Null);
+    db.teardown().await;
+}
+
+#[tokio::test]
+async fn unreachable_node_falls_back_to_database() {
+    let db = db_or_skip!();
+    let node = NodeClient::new("http://127.0.0.1:1", Duration::from_secs(2)).unwrap();
+    let r = request(&db.app_with_node(node), &format!("/blocks/{BLOCK}")).await;
+    assert_eq!(r.status, 200, "{}", r.json());
+    assert_eq!(r.data_source(), Some("Database"));
+    assert_eq!(r.json()["verboseData"]["hash"], BLOCK);
     db.teardown().await;
 }
 
@@ -110,11 +155,10 @@ async fn health_ok_and_database_outage_is_a_real_503() {
     db.teardown().await;
 
     // Unreachable database must surface as 503, never as an empty success.
-    let dead = sqlx::postgres::PgPoolOptions::new()
-        .acquire_timeout(std::time::Duration::from_millis(300))
-        .connect_lazy("postgres://u:p@127.0.0.1:1/none")
-        .unwrap();
-    let app = karlsen_explorer_api::routes::router(karlsen_explorer_api::AppState { db: dead });
+    let app = karlsen_explorer_api::routes::router(karlsen_explorer_api::AppState {
+        db: common::dead_pool(),
+        node: None,
+    });
     let (s, v) = get(&app, "/info/health").await;
     assert_eq!(s, 503);
     assert_eq!(v["detail"], "Service temporarily unavailable");

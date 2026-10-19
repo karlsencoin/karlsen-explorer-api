@@ -11,8 +11,18 @@ compared with a real response. Captures live in `crates/explorer-api/tests/fixtu
 | `golden-block-color.json` | `includeColor=true` | same block |
 | `golden-block-notx.json` | `includeTransactions=false` | same block |
 
-The unit tests in `routes/blocks.rs` rebuild the response from each fixture, using the
-same functions as the handler, and compare it with the capture field by field.
+## How `/blocks/{hash}` is served
+
+Same model as the Kaspa REST server (`kaspa-ng/kaspa-rest-server`) and the original
+Karlsen REST server: **karlsend first, database as fallback.** All four captures came
+from the node (41 parent levels and `mass: 172` exist nowhere else).
+
+- **Node path** (`tests/node.rs`): a mock karlsend replays every capture as gRPC
+  messages; the response must equal the capture exactly, with the one intended
+  difference below.
+- **Database path** (`routes/blocks.rs` unit tests, `tests/blocks.rs`): used when the
+  node does not have the block body (pruned, header only) or does not answer within
+  `NODE_TIMEOUT_MS`. Marked with `X-Data-Source: Database`, as in Kaspa.
 
 ## Confirmed
 
@@ -30,39 +40,49 @@ same functions as the handler, and compare it with the capture field by field.
 - `isChainBlock` is `false` for a tip block and `true` for an accepted chain block.
 - The coinbase comes first in `transactionIds` / `transactions`.
 - `includeTransactions=false`: `transactions` is present and `null`.
-- `includeColor=true`: `extra.color` is `"blue"`; `minerAddress` and `minerInfo` stay `null`.
+- `includeColor=true`: `extra.color` is `"blue"` for a chain block.
 
 ## Fixed after comparing
 
 - `extra` (`{color, minerAddress, minerInfo}`) is always present; it was missing.
 - `transactions` is `null` with `includeTransactions=false`; it used to be omitted.
-- `parents[0]` lists the selected parent first (legacy order). The remaining parents are
-  sorted by hash and `childrenHashes` is sorted by hash; the legacy order for those is
-  not reproducible from the database, so callers must not depend on it.
+- `includeColor=true` is implemented (it returned 501). Chain blocks are `"blue"`;
+  otherwise the node is asked (`getCurrentBlockColor`), or on the database path the
+  block's future is searched (up to 64 blocks) for the chain block whose merge set
+  lists it. `null` when it cannot be decided yet. Kaspa's database lookup checks
+  only direct children; a merging chain block can sit deeper.
+- Database path: `parents[0]` lists the selected parent first (legacy order); other
+  parents and `childrenHashes` are sorted by hash for stable output.
 
-## Known deviations
+## Intended difference from legacy
 
-- **`header.parents`**: legacy returns one `parentHashes` entry per DAG level (41 in every
-  capture). The database stores only level 0 (`block_parent`), so this API returns a single
-  entry. Higher levels can only come from the node, which suggests legacy reads this
-  endpoint from the node rather than from Postgres. Open decision: accept the single
-  level, or add a node-backed path for `/blocks/{hash}`.
-- **Transaction `mass`**: for the regular transaction legacy returns `mass: 172` and
-  `computeMass: 2036`. The schema has a single `mass` column and this API emits it for
-  both fields, so `mass` differs (it is probably the storage mass, which is not stored).
-  Coinbase transactions have `0` for both and match.
-- **`includeColor=true`** is answered with 501. Legacy returns `"blue"` or `"red"`, most
-  likely from a node call; deriving it from the database would need a lookup in
-  `merge_set_blues_hashes` / `merge_set_reds_hashes` of the accepting chain block.
+- **`extra.minerAddress` / `extra.minerInfo`** are decoded from the coinbase payload
+  (as Kaspa does). Legacy `rest-v2` returns `null` for both, most likely because its
+  address helper does not accept the `karlsen` prefix (the HRP bug seen elsewhere).
+  Example: `karlsen:qpeusc8t…` / `3.1.0/WoolyPooly US1-kls-1`. Only filled when the
+  response includes transactions (also as in Kaspa).
+
+## Known gaps on the database path only
+
+Kaspa's database fallback has the same two gaps, because the shared schema does not
+store this data. On the node path both match legacy.
+
+- **`header.parents`**: only level 0 is stored (`block_parent`), so one entry instead
+  of one per DAG level (41 in the captures). Both explorers display only `parents[0]`.
+- **Transaction `mass`**: one column is stored (the compute mass, 2036 in the capture);
+  the node also reports the storage mass (172). The database path returns the stored
+  value for both `mass` and `computeMass`. The explorer reads `mass` from
+  `/transactions`, not from `/blocks`.
 
 ## Still unverified
 
+- Real karlsend gRPC behaviour of `getCurrentBlockColor` for a red block, and of
+  `getBlock` for a pruned block (expected: error or `isHeaderOnly`, both handled as
+  "not in node").
 - `header.blueWork` with an odd number of hex digits (leading zero nibble): all captured
-  values are even-length, so the two trimming rules cannot be told apart.
-- Order of several regular transactions in one block (currently coinbase first, then by
-  id; the captures hold at most one regular transaction).
+  values are even-length.
+- Order of several regular transactions in one block on the database path (coinbase
+  first, then by id; the captures hold at most one regular transaction).
 - Non-zero `sequence`, `lockTime`, `gas` or transaction `version`.
 - Outputs that are not plain `pubkey` scripts (`scripthash`, `pubkeyecdsa`, non-standard)
   and the exact `scriptPublicKeyType` strings for them.
-- `isChainBlock` from `transactions_acceptances` for chain blocks whose acceptance data is
-  empty.
