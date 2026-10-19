@@ -44,6 +44,7 @@ pub async fn get_transaction(
     let opts = TxOptions {
         include_inputs: q.inputs,
         include_outputs: q.outputs,
+        block_time_from_first_block: true,
         ..TxOptions::new("", q.resolve_previous_outpoints)
     };
     transactions::load(&state.db, state.node.as_ref(), &[id], &opts)

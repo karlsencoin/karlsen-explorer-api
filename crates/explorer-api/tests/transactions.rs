@@ -151,11 +151,9 @@ async fn transaction_and_search_match_capture() {
 
     let r = request(&app, &format!("/transactions/{TX}")).await;
     assert_eq!(r.status, 200, "{}", r.json());
-    let mut want = golden("one");
-    // Legacy reports two different block_time values for this transaction (…244 here,
-    // …298 in search); the stored value is the search one. See docs/VERIFY.md.
-    want["block_time"] = golden("search")[0]["block_time"].clone();
-    assert_same(&r.body, &want);
+    // block_time …244 is the first containing block's time; search returns the stored
+    // …298. Both as legacy does (docs/VERIFY.md).
+    assert_same(&r.body, &golden("one"));
 
     let body = format!(r#"{{"transactionIds":["{TX}"]}}"#);
     let r = common_post(&app, "/transactions/search", &body).await;
@@ -246,4 +244,31 @@ async fn common_post(app: &axum::Router, uri: &str, body: &str) -> common::Reply
             .to_bytes()
             .to_vec(),
     }
+}
+
+#[tokio::test]
+async fn block_hash_order_and_block_time_follow_legacy() {
+    let db = db_or_skip!();
+    let app = db.app();
+    let tx = "7ffd742666af6ece53e0a8191a000e714131cf16e5f63556b11ae984537c6045";
+    // Live legacy answer for this transaction (compare-legacy.py, 2026-10-19): blocks in
+    // recording order (not hash or time order), block_time of the first one.
+    let v = request(&app, &format!("/transactions/{tx}")).await.json();
+    assert_eq!(
+        v["block_hash"],
+        serde_json::json!([
+            "0ad542b49d3924c98aae29d21a3daa6cc88301e1f4d86f12d7123d07d85a01e1",
+            "47a91feeeb6b3f5be3e011eef498cb5e103ff6345ff50518c215c82753dab99a"
+        ])
+    );
+    assert_eq!(v["block_time"], 1792419655093i64);
+    // Search returns the stored value.
+    let r = common_post(
+        &app,
+        "/transactions/search",
+        &format!(r#"{{"transactionIds":["{tx}"]}}"#),
+    )
+    .await;
+    assert_eq!(r.json()[0]["block_time"], 1792419651740i64);
+    db.teardown().await;
 }

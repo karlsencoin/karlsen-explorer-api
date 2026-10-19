@@ -46,6 +46,9 @@ pub struct TxOptions {
     pub include_inputs: bool,
     pub include_outputs: bool,
     pub acceptance: Option<AcceptanceFilter>,
+    /// `block_time` from the first containing block instead of the stored value.
+    /// Legacy `GET /transactions/{id}` does this; its search endpoints do not.
+    pub block_time_from_first_block: bool,
 }
 
 impl TxOptions {
@@ -61,6 +64,7 @@ impl TxOptions {
             include_inputs: true,
             include_outputs: true,
             acceptance: None,
+            block_time_from_first_block: false,
         }
     }
 
@@ -203,7 +207,7 @@ pub async fn load(
     }
     let found: Vec<Vec<u8>> = rows.iter().map(|r| r.transaction_id.clone()).collect();
 
-    let mut block_hashes = if opts.wants("block_hash") {
+    let mut block_hashes = if opts.wants("block_hash") || opts.block_time_from_first_block {
         load_block_hashes(db, &found).await?
     } else {
         HashMap::new()
@@ -239,14 +243,18 @@ pub async fn load(
             }
         }
 
+        let blocks = block_hashes.remove(&r.transaction_id).unwrap_or_default();
         let tx = TxJson {
             subnetwork_id: r.subnetwork_id,
             transaction_id: hex::encode(&r.transaction_id),
             hash: hx(&r.hash),
             mass: r.mass.map(|m| m.to_string()),
             payload: r.payload.filter(|p| !p.is_empty()).map(hex::encode),
-            block_hash: block_hashes.remove(&r.transaction_id).unwrap_or_default(),
-            block_time: r.block_time,
+            block_time: match blocks.first() {
+                Some((_, Some(ts))) if opts.block_time_from_first_block => Some(*ts),
+                _ => r.block_time,
+            },
+            block_hash: blocks.into_iter().map(|(h, _)| h).collect(),
             is_accepted: r.is_accepted,
             accepting_block_hash: hx(&r.accepting_block_hash),
             accepting_block_blue_score: blue_score,
@@ -265,20 +273,26 @@ pub async fn load(
     Ok(out)
 }
 
+/// Containing blocks with their timestamps, in the order the indexer recorded them
+/// (physical row order). That is the order legacy returns: it is neither hash nor
+/// time order (verified against live data, see docs/VERIFY.md).
 async fn load_block_hashes(
     db: &PgPool,
     ids: &[Vec<u8>],
-) -> Result<HashMap<Vec<u8>, Vec<String>>, ApiError> {
-    let rows: Vec<(Vec<u8>, Vec<u8>)> = sqlx::query_as(
-        "SELECT transaction_id, block_hash FROM blocks_transactions
-         WHERE transaction_id = ANY($1) ORDER BY transaction_id, block_hash",
+) -> Result<HashMap<Vec<u8>, Vec<(String, Option<i64>)>>, ApiError> {
+    let rows: Vec<(Vec<u8>, Vec<u8>, Option<i64>)> = sqlx::query_as(
+        r#"SELECT bt.transaction_id, bt.block_hash, b."timestamp"
+           FROM blocks_transactions bt
+           LEFT JOIN blocks b ON b.hash = bt.block_hash
+           WHERE bt.transaction_id = ANY($1)
+           ORDER BY bt.transaction_id, bt.ctid"#,
     )
     .bind(ids)
     .fetch_all(db)
     .await?;
-    let mut m: HashMap<Vec<u8>, Vec<String>> = HashMap::new();
-    for (tx, block) in rows {
-        m.entry(tx).or_default().push(hex::encode(block));
+    let mut m: HashMap<Vec<u8>, Vec<(String, Option<i64>)>> = HashMap::new();
+    for (tx, block, ts) in rows {
+        m.entry(tx).or_default().push((hex::encode(block), ts));
     }
     Ok(m)
 }

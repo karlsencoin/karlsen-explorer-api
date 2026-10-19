@@ -110,10 +110,13 @@ including key order.
   has it). The explorer compares these with the `karlsen:` address of the page, so
   incoming/outgoing detection and address links break. Every address here carries the
   prefix.
-- **Legacy inconsistency:** for transaction `f596f45c…`, which is in two blocks, legacy
-  returns `block_time` `…244` from `/transactions/{id}` and `…298` from `search`. The
-  stored value is `…298` (`transactions` and `addresses_transactions`), which this API
-  returns from both endpoints.
+- **Transactions in several blocks** (live comparison, 2026-10-19): legacy lists
+  `block_hash` in the order the indexer recorded the rows, which is neither hash nor
+  time order; this API orders by the physical row order (`ctid`) to match.
+  `GET /transactions/{id}` returns the **first listed block's timestamp** as
+  `block_time`, while `search` and `full-transactions` return the stored
+  `transactions.block_time` (e.g. `7ffd7426…`: `…655093` vs `…651740`). Both reproduced
+  as is.
 - Not ported: `full-transactions-page` (legacy answers every address with
   `400 Invalid address`, and no caller in the logs uses it).
 - Confirmed: `addresses_transactions.address` is stored without the `karlsen:` prefix
