@@ -74,6 +74,24 @@ store this data. On the node path both match legacy.
   value for both `mass` and `computeMass`. The explorer reads `mass` from
   `/transactions`, not from `/blocks`.
 
+## Addresses (`/addresses/...`)
+
+Captured 2026-10-19 (`golden-address-*.json`). The legacy service and this API both
+read karlsend's UTXO index; the database has no live UTXO set, so there is no fallback.
+`tests/node.rs` checks the responses byte for byte against the captures.
+
+- Confirmed: `balance` is a number; in UTXOs `amount` and `blockDaaScore` are strings,
+  `scriptPublicKey` has no `version`, `index: 0` and `isCoinbase: false` are present.
+- UTXO order is the node's and differs between two identical calls; callers must not
+  rely on it.
+- **Fixed:** a well-formed address with a bad checksum got `200 {"balance": 0}` from
+  legacy, so a typo looked like an empty wallet. It is now `422 Invalid address`.
+- **Fixed:** node failures (down, timeout, no `--utxoindex`) are `503`, never a zero
+  balance or an empty list.
+- Malformed addresses are `422` in both; legacy's body is FastAPI's validation list,
+  ours is `{"detail": "Invalid address: ..."}`.
+- Batch endpoints accept at most 1000 addresses (legacy had no limit).
+
 ## Still unverified
 
 - Real karlsend gRPC behaviour of `getCurrentBlockColor` for a red block, and of

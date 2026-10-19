@@ -54,3 +54,7 @@ legacy responses in `tests/fixtures/golden-*.json`.
 |---|---|
 | `GET /info/health` | 200 only if the database answers, otherwise 503 |
 | `GET /blocks/{blockId}` | Node first, database fallback (`X-Data-Source: Database`); `includeTransactions`, `includeColor` |
+| `GET /addresses/{address}/balance` | karlsend UTXO index; invalid address → 422; node failure → 503 |
+| `GET /addresses/{address}/utxos` | karlsend UTXO index |
+| `POST /addresses/balances` | `{"addresses": [...]}`, at most 1000 per request |
+| `POST /addresses/utxos` | `{"addresses": [...]}`, at most 1000 per request |

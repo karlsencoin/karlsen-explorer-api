@@ -21,6 +21,11 @@ pub enum ApiError {
     NotImplemented(&'static str),
     #[error("database error")]
     Database(#[from] sqlx::Error),
+    #[error("node error")]
+    Node(#[from] crate::node::NodeError),
+    /// A dependency this endpoint needs is not configured (e.g. no karlsend).
+    #[error("{0}")]
+    Unavailable(&'static str),
 }
 
 impl IntoResponse for ApiError {
@@ -32,6 +37,20 @@ impl IntoResponse for ApiError {
             ApiError::Database(e) => {
                 // Details go to the log only, never to the caller.
                 tracing::error!(error = %e, "database error");
+                (
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "Service temporarily unavailable".to_string(),
+                )
+            }
+            ApiError::Node(e) => {
+                tracing::error!(error = %e, "node error");
+                (
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "Service temporarily unavailable".to_string(),
+                )
+            }
+            ApiError::Unavailable(m) => {
+                tracing::error!(reason = m, "dependency not configured");
                 (
                     StatusCode::SERVICE_UNAVAILABLE,
                     "Service temporarily unavailable".to_string(),

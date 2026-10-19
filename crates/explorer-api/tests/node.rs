@@ -17,10 +17,13 @@ use karlsen_explorer_api::{
             karlsend_request::Payload as Req,
             karlsend_response::Payload as Resp,
             rpc_server::{Rpc, RpcServer},
-            GetBlockResponseMessage, GetCurrentBlockColorResponseMessage, KarlsendRequest,
-            KarlsendResponse, RpcBlock, RpcBlockHeader, RpcBlockLevelParents, RpcBlockVerboseData,
-            RpcError, RpcOutpoint, RpcScriptPublicKey, RpcTransaction, RpcTransactionInput,
-            RpcTransactionOutput, RpcTransactionOutputVerboseData, RpcTransactionVerboseData,
+            GetBalanceByAddressResponseMessage, GetBalancesByAddressesResponseMessage,
+            GetBlockResponseMessage, GetCurrentBlockColorResponseMessage,
+            GetUtxosByAddressesResponseMessage, KarlsendRequest, KarlsendResponse,
+            RpcBalancesByAddressesEntry, RpcBlock, RpcBlockHeader, RpcBlockLevelParents,
+            RpcBlockVerboseData, RpcError, RpcOutpoint, RpcScriptPublicKey, RpcTransaction,
+            RpcTransactionInput, RpcTransactionOutput, RpcTransactionOutputVerboseData,
+            RpcTransactionVerboseData, RpcUtxoEntry, RpcUtxosByAddressesEntry,
         },
         NodeClient,
     },
@@ -166,6 +169,18 @@ fn rpc_block_from_golden(raw: &str) -> RpcBlock {
 struct MockNode {
     blocks: HashMap<String, RpcBlock>,
     colors: HashMap<String, bool>,
+    balances: HashMap<String, u64>,
+    utxos: Vec<RpcUtxosByAddressesEntry>,
+    /// Simulates karlsend without --utxoindex.
+    no_utxoindex: bool,
+}
+
+impl MockNode {
+    fn index_error(&self) -> Option<RpcError> {
+        self.no_utxoindex.then(|| RpcError {
+            message: "Method unavailable. Run the node with the --utxoindex argument.".into(),
+        })
+    }
 }
 
 impl MockNode {
@@ -190,6 +205,37 @@ impl MockNode {
                     error: blue.is_none().then(|| RpcError {
                         message: "color unknown".into(),
                     }),
+                })
+            }
+            Req::GetBalanceByAddressRequest(r) => {
+                Resp::GetBalanceByAddressResponse(GetBalanceByAddressResponseMessage {
+                    balance: self.balances.get(&r.address).copied().unwrap_or_default(),
+                    error: self.index_error(),
+                })
+            }
+            Req::GetBalancesByAddressesRequest(r) => {
+                Resp::GetBalancesByAddressesResponse(GetBalancesByAddressesResponseMessage {
+                    entries: r
+                        .addresses
+                        .iter()
+                        .map(|a| RpcBalancesByAddressesEntry {
+                            address: a.clone(),
+                            balance: self.balances.get(a).copied().unwrap_or_default(),
+                            error: None,
+                        })
+                        .collect(),
+                    error: self.index_error(),
+                })
+            }
+            Req::GetUtxosByAddressesRequest(r) => {
+                Resp::GetUtxosByAddressesResponse(GetUtxosByAddressesResponseMessage {
+                    entries: self
+                        .utxos
+                        .iter()
+                        .filter(|u| r.addresses.contains(&u.address))
+                        .cloned()
+                        .collect(),
+                    error: self.index_error(),
                 })
             }
             other => panic!("unexpected request {other:?}"),
@@ -360,4 +406,156 @@ async fn block_unknown_to_node_falls_back_and_reports_database_outage() {
     let r = request(&app, &format!("/blocks/{}", "ee".repeat(32))).await;
     assert_eq!(r.status, 503);
     assert_eq!(r.json()["detail"], "Service temporarily unavailable");
+}
+
+// ---- addresses ----
+
+const BALANCE: &str = include_str!("fixtures/golden-address-balance.json");
+const BALANCES: &str = include_str!("fixtures/golden-addresses-balances.json");
+const UTXO_ENTRY: &str = include_str!("fixtures/golden-address-utxo-entry.json");
+const A1: &str = "karlsen:qrc9rgx9x8gyekvrd7533hj3tl0cxd5r9ggxkg5l4a6xgllethrtuvp48fc3n";
+const A2: &str = "karlsen:qzsflg24vlkuhqzgjm2v39rkmhjg8e3qwtaylccpxqu97n72vx0s7faphh8a7";
+
+fn address_node() -> MockNode {
+    let mut node = MockNode::default();
+    for e in serde_json::from_str::<Vec<Value>>(BALANCES).unwrap() {
+        node.balances
+            .insert(s(&e["address"]), e["balance"].as_u64().unwrap());
+    }
+    let u: Value = serde_json::from_str(UTXO_ENTRY).unwrap();
+    node.utxos.push(RpcUtxosByAddressesEntry {
+        address: s(&u["address"]),
+        outpoint: Some(RpcOutpoint {
+            transaction_id: s(&u["outpoint"]["transactionId"]),
+            index: n(&u["outpoint"]["index"]) as u32,
+        }),
+        utxo_entry: Some(RpcUtxoEntry {
+            amount: n(&u["utxoEntry"]["amount"]),
+            script_public_key: Some(RpcScriptPublicKey {
+                version: 0,
+                script_public_key: s(&u["utxoEntry"]["scriptPublicKey"]["scriptPublicKey"]),
+            }),
+            block_daa_score: n(&u["utxoEntry"]["blockDaaScore"]),
+            is_coinbase: u["utxoEntry"]["isCoinbase"].as_bool().unwrap(),
+        }),
+    });
+    // A UTXO of another address must not leak into a single-address answer.
+    let mut other = node.utxos[0].clone();
+    other.address = A2.to_string();
+    node.utxos.push(other);
+    node
+}
+
+async fn post(app: &axum::Router, uri: &str, body: &str) -> common::Reply {
+    use axum::{body::Body, http::Request};
+    use http_body_util::BodyExt;
+    use tower::ServiceExt;
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::post(uri)
+                .header("content-type", "application/json")
+                .body(Body::from(body.to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    common::Reply {
+        status: resp.status().as_u16(),
+        headers: resp.headers().clone(),
+        body: resp
+            .into_body()
+            .collect()
+            .await
+            .unwrap()
+            .to_bytes()
+            .to_vec(),
+    }
+}
+
+#[tokio::test]
+async fn address_responses_are_byte_identical_to_captures() {
+    let app = app_with_mock(address_node()).await;
+
+    let r = request(&app, &format!("/addresses/{A1}/balance")).await;
+    assert_eq!(
+        (r.status, std::str::from_utf8(&r.body).unwrap()),
+        (200, BALANCE)
+    );
+
+    let body = format!(r#"{{"addresses":["{A1}","{A2}"]}}"#);
+    let r = post(&app, "/addresses/balances", &body).await;
+    assert_eq!(
+        (r.status, std::str::from_utf8(&r.body).unwrap()),
+        (200, BALANCES)
+    );
+
+    let r = request(&app, &format!("/addresses/{A1}/utxos")).await;
+    assert_eq!(r.status, 200);
+    assert_eq!(
+        std::str::from_utf8(&r.body).unwrap(),
+        format!("[{UTXO_ENTRY}]"),
+        "only the requested address, in the legacy shape"
+    );
+
+    let r = post(
+        &app,
+        "/addresses/utxos",
+        &format!(r#"{{"addresses":["{A1}","{A2}"]}}"#),
+    )
+    .await;
+    assert_eq!(r.status, 200);
+    assert_eq!(r.json().as_array().unwrap().len(), 2);
+
+    let r = post(&app, "/addresses/balances", r#"{"addresses":[]}"#).await;
+    assert_eq!((r.status, r.json()), (200, serde_json::json!([])));
+}
+
+#[tokio::test]
+async fn invalid_addresses_are_rejected_not_answered_with_zero() {
+    let app = app_with_mock(address_node()).await;
+    // Legacy: 422 for a malformed address (same here).
+    let r = request(&app, "/addresses/karlsen:qqqqinvalid/balance").await;
+    assert_eq!(r.status, 422);
+    // Legacy answers a bad checksum with 200 and balance 0, so a typo looks like an
+    // empty wallet. Here it is a 422.
+    let bad_checksum = format!("{}x", &A1[..A1.len() - 1]);
+    let r = request(&app, &format!("/addresses/{bad_checksum}/balance")).await;
+    assert_eq!(r.status, 422);
+    assert_eq!(
+        r.json()["detail"],
+        format!("Invalid address: {bad_checksum}")
+    );
+    // One bad address fails the whole batch.
+    let body = format!(r#"{{"addresses":["{A1}","{bad_checksum}"]}}"#);
+    assert_eq!(post(&app, "/addresses/balances", &body).await.status, 422);
+}
+
+#[tokio::test]
+async fn node_failures_are_503_never_zero() {
+    let mut node = address_node();
+    node.no_utxoindex = true;
+    let app = app_with_mock(node).await;
+    for uri in [
+        format!("/addresses/{A1}/balance"),
+        format!("/addresses/{A1}/utxos"),
+    ] {
+        let r = request(&app, &uri).await;
+        assert_eq!(r.status, 503, "{uri}");
+        assert_eq!(r.json()["detail"], "Service temporarily unavailable");
+    }
+    let body = format!(r#"{{"addresses":["{A1}"]}}"#);
+    assert_eq!(post(&app, "/addresses/balances", &body).await.status, 503);
+
+    // No node configured at all.
+    let app = routes::router(AppState {
+        db: dead_pool(),
+        node: None,
+    });
+    assert_eq!(
+        request(&app, &format!("/addresses/{A1}/balance"))
+            .await
+            .status,
+        503
+    );
 }

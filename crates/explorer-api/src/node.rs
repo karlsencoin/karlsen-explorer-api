@@ -18,7 +18,9 @@ pub mod proto {
 
 use proto::{
     karlsend_request::Payload as Req, karlsend_response::Payload as Resp, rpc_client::RpcClient,
-    GetBlockRequestMessage, GetCurrentBlockColorRequestMessage, KarlsendRequest, RpcBlock,
+    GetBalanceByAddressRequestMessage, GetBalancesByAddressesRequestMessage,
+    GetBlockRequestMessage, GetCurrentBlockColorRequestMessage, GetUtxosByAddressesRequestMessage,
+    KarlsendRequest, RpcBalancesByAddressesEntry, RpcBlock, RpcUtxosByAddressesEntry,
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -33,6 +35,9 @@ pub enum NodeError {
     NoReply,
     #[error("node replied with an unexpected message")]
     UnexpectedReply,
+    /// The node answered with an RPC error (for example utxoindex disabled).
+    #[error("node error: {0}")]
+    Rpc(String),
 }
 
 #[derive(Clone)]
@@ -103,6 +108,64 @@ impl NodeClient {
         }
         Ok(r.block
             .filter(|b| b.verbose_data.as_ref().is_some_and(|v| !v.is_header_only)))
+    }
+
+    /// Confirmed balance in sompi. Needs karlsend running with `--utxoindex`.
+    pub async fn get_balance_by_address(&self, address: &str) -> Result<u64, NodeError> {
+        let reply = self
+            .call(Req::GetBalanceByAddressRequest(
+                GetBalanceByAddressRequestMessage {
+                    address: address.to_string(),
+                },
+            ))
+            .await?;
+        let Resp::GetBalanceByAddressResponse(r) = reply else {
+            return Err(NodeError::UnexpectedReply);
+        };
+        match r.error {
+            Some(e) => Err(NodeError::Rpc(e.message)),
+            None => Ok(r.balance),
+        }
+    }
+
+    pub async fn get_balances_by_addresses(
+        &self,
+        addresses: &[String],
+    ) -> Result<Vec<RpcBalancesByAddressesEntry>, NodeError> {
+        let reply = self
+            .call(Req::GetBalancesByAddressesRequest(
+                GetBalancesByAddressesRequestMessage {
+                    addresses: addresses.to_vec(),
+                },
+            ))
+            .await?;
+        let Resp::GetBalancesByAddressesResponse(r) = reply else {
+            return Err(NodeError::UnexpectedReply);
+        };
+        match r.error {
+            Some(e) => Err(NodeError::Rpc(e.message)),
+            None => Ok(r.entries),
+        }
+    }
+
+    pub async fn get_utxos_by_addresses(
+        &self,
+        addresses: &[String],
+    ) -> Result<Vec<RpcUtxosByAddressesEntry>, NodeError> {
+        let reply = self
+            .call(Req::GetUtxosByAddressesRequest(
+                GetUtxosByAddressesRequestMessage {
+                    addresses: addresses.to_vec(),
+                },
+            ))
+            .await?;
+        let Resp::GetUtxosByAddressesResponse(r) = reply else {
+            return Err(NodeError::UnexpectedReply);
+        };
+        match r.error {
+            Some(e) => Err(NodeError::Rpc(e.message)),
+            None => Ok(r.entries),
+        }
     }
 
     /// `Some(true)` for blue, `Some(false)` for red, `None` when the node cannot tell
