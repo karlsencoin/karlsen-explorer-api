@@ -10,7 +10,7 @@ use std::collections::{HashMap, HashSet};
 
 use axum::{
     extract::{Path, Query, State},
-    http::{HeaderMap, HeaderValue},
+    http::{header::CACHE_CONTROL, HeaderMap, HeaderValue},
     Json,
 };
 use serde::{Deserialize, Serialize};
@@ -357,6 +357,75 @@ pub async fn get_block(
     }
     headers.insert("x-data-source", HeaderValue::from_static("Database"));
     Ok((headers, Json(model)))
+}
+
+// ---- GET /blocks ----
+
+#[derive(Debug, Deserialize)]
+pub struct BlocksQuery {
+    #[serde(rename = "lowHash")]
+    low_hash: Option<String>,
+    #[serde(rename = "includeBlocks", default)]
+    include_blocks: bool,
+    #[serde(rename = "includeTransactions", default)]
+    include_transactions: bool,
+}
+
+/// Legacy validated `lowHash` with an unanchored `[a-f0-9]{64}` search.
+fn contains_hex64(s: &str) -> bool {
+    s.as_bytes()
+        .split(|c| !matches!(c, b'0'..=b'9' | b'a'..=b'f'))
+        .any(|run| run.len() >= 64)
+}
+
+/// Blocks from `lowHash` towards the tip, straight from karlsend (`getBlocks`).
+/// Like legacy, `extra` is `null` here and any node failure answers with empty
+/// lists rather than an error.
+pub async fn list_blocks(
+    State(state): State<AppState>,
+    Query(q): Query<BlocksQuery>,
+) -> Result<(HeaderMap, Json<serde_json::Value>), ApiError> {
+    let low_hash = q.low_hash.unwrap_or_default();
+    if !contains_hex64(&low_hash) {
+        return Err(ApiError::Validation(
+            "lowHash must contain 64 lowercase hex characters".into(),
+        ));
+    }
+    let node = state
+        .node
+        .as_ref()
+        .ok_or(ApiError::Unavailable("karlsend is not configured"))?;
+    let mut headers = HeaderMap::new();
+    headers.insert(CACHE_CONTROL, HeaderValue::from_static("public, max-age=3"));
+
+    let reply = node
+        .get_blocks(
+            &low_hash,
+            q.include_blocks,
+            q.include_transactions,
+            std::time::Duration::from_secs(60),
+        )
+        .await;
+    let body = match reply {
+        Ok(r) => {
+            let blocks: Vec<serde_json::Value> = r
+                .blocks
+                .into_iter()
+                .map(|b| {
+                    let mut v = serde_json::to_value(block_from_node(b, true))
+                        .unwrap_or(serde_json::Value::Null);
+                    v["extra"] = serde_json::Value::Null;
+                    v
+                })
+                .collect();
+            serde_json::json!({ "blockHashes": r.block_hashes, "blocks": blocks })
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "getBlocks failed");
+            serde_json::json!({ "blockHashes": [], "blocks": [] })
+        }
+    };
+    Ok((headers, Json(body)))
 }
 
 // ---- node path ----

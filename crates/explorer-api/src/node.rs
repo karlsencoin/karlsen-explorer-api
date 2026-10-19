@@ -20,9 +20,10 @@ use proto::{
     karlsend_request::Payload as Req, karlsend_response::Payload as Resp, rpc_client::RpcClient,
     GetBalanceByAddressRequestMessage, GetBalancesByAddressesRequestMessage,
     GetBlockDagInfoRequestMessage, GetBlockDagInfoResponseMessage, GetBlockRequestMessage,
-    GetCoinSupplyRequestMessage, GetCoinSupplyResponseMessage, GetCurrentBlockColorRequestMessage,
-    GetInfoRequestMessage, GetInfoResponseMessage, GetUtxosByAddressesRequestMessage,
-    KarlsendRequest, RpcBalancesByAddressesEntry, RpcBlock, RpcUtxosByAddressesEntry,
+    GetBlocksRequestMessage, GetBlocksResponseMessage, GetCoinSupplyRequestMessage,
+    GetCoinSupplyResponseMessage, GetCurrentBlockColorRequestMessage, GetInfoRequestMessage,
+    GetInfoResponseMessage, GetUtxosByAddressesRequestMessage, KarlsendRequest,
+    RpcBalancesByAddressesEntry, RpcBlock, RpcUtxosByAddressesEntry,
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -65,6 +66,10 @@ impl NodeClient {
     }
 
     async fn call(&self, payload: Req) -> Result<Resp, NodeError> {
+        self.call_with_timeout(payload, self.timeout).await
+    }
+
+    async fn call_with_timeout(&self, payload: Req, limit: Duration) -> Result<Resp, NodeError> {
         let mut client = self.client.clone();
         let fut = async move {
             let (tx, rx) = mpsc::channel(1);
@@ -83,7 +88,7 @@ impl NodeClient {
             drop(tx);
             reply.payload.ok_or(NodeError::UnexpectedReply)
         };
-        tokio::time::timeout(self.timeout, fut)
+        tokio::time::timeout(limit, fut)
             .await
             .map_err(|_| NodeError::Timeout)?
     }
@@ -110,6 +115,34 @@ impl NodeClient {
         }
         Ok(r.block
             .filter(|b| b.verbose_data.as_ref().is_some_and(|v| !v.is_header_only)))
+    }
+
+    /// Blocks from `low_hash` towards the tip (`getBlocks`). Legacy allowed this
+    /// call 60 s, longer than the per-call node timeout.
+    pub async fn get_blocks(
+        &self,
+        low_hash: &str,
+        include_blocks: bool,
+        include_transactions: bool,
+        limit: Duration,
+    ) -> Result<GetBlocksResponseMessage, NodeError> {
+        let reply = self
+            .call_with_timeout(
+                Req::GetBlocksRequest(GetBlocksRequestMessage {
+                    low_hash: low_hash.to_string(),
+                    include_blocks,
+                    include_transactions,
+                }),
+                limit,
+            )
+            .await?;
+        let Resp::GetBlocksResponse(r) = reply else {
+            return Err(NodeError::UnexpectedReply);
+        };
+        if let Some(e) = r.error {
+            return Err(NodeError::Rpc(e.message));
+        }
+        Ok(r)
     }
 
     pub async fn get_block_dag_info(&self) -> Result<GetBlockDagInfoResponseMessage, NodeError> {

@@ -178,6 +178,27 @@ def norm_kgi(lv, nv):
     return walk(lv), walk(nv)
 
 
+def norm_rich(lv, nv):
+    # Legacy left equal balances in Postgres' order; the new API sorts them by address.
+    def srt(entries):
+        return sorted(entries, key=lambda e: (-e["amount"], e["address"]))
+    for v in (lv, nv):
+        if isinstance(v, dict) and isinstance(v.get("top_addresses"), list):
+            v["top_addresses"] = srt(v["top_addresses"])
+    if isinstance(lv, list) and isinstance(nv, list):
+        return srt(lv), srt(nv)
+    return lv, nv
+
+
+def norm_blocks_list(lv, nv):
+    # getBlocks runs up to the moving tip: compare the first few blocks only.
+    for v in (lv, nv):
+        if isinstance(v, dict):
+            v["blockHashes"] = (v.get("blockHashes") or [])[:5]
+            v["blocks"] = (v.get("blocks") or [])[:5]
+    return lv, nv
+
+
 def norm_tx(lv, nv):
     return prefix_addresses(lv), nv
 
@@ -258,6 +279,26 @@ def main():
     print("-- KGI node map (scanner files; legacy caches them up to 60 s, so LIVE is possible)")
     for path in ("/info/nodes", "/info/peers/geo", "/info/seeder-nodes"):
         check(path, path, normalise=norm_kgi)
+
+    print("-- analytics (balances table; refreshed hourly, so LIVE is possible)")
+    for path in ("/analytics/addresses/top", "/analytics/addresses/top?limit=50&offset=20",
+                 "/analytics/addresses/range?min_amount=100000&max_amount=1000000"):
+        check(path, path, normalise=norm_rich)
+    for path in ("/analytics/addresses/total", "/analytics/addresses/distribution-summary",
+                 "/analytics/addresses/distribution?min_amount=1000&max_amount=10000",
+                 "/analytics/addresses/distribution?min_amount=10000000"):
+        check(path, path)
+    for a in ADDRESSES:
+        check(f"history {a[:20]}", f"/analytics/addresses/{a}/history?limit=10")
+
+    print("-- GET /blocks (node getBlocks; first 5 blocks after lowHash)")
+    low = blocks[DEPTH + 5]["verboseData"]["hash"]
+    check("blocks hashes only", f"/blocks?lowHash={low}", normalise=norm_blocks_list)
+    check("blocks with blocks", f"/blocks?lowHash={low}&includeBlocks=true",
+          normalise=norm_blocks_list)
+    check("blocks with transactions",
+          f"/blocks?lowHash={low}&includeBlocks=true&includeTransactions=true",
+          normalise=norm_blocks_list)
 
     print("-- intended differences (new behaviour checked, legacy shown)")
     bad = ADDRESSES[0][:-1] + ("q" if ADDRESSES[0][-1] != "q" else "p")

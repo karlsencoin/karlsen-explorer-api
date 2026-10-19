@@ -15,7 +15,12 @@ watcher and a few external integrations.
   `POST /addresses/balances`
 - Analytics: `/analytics/addresses/top|distribution-summary|range|total|distribution`,
   `/analytics/addresses/{addr}/history`
-- Misc: `/bridge/reserves`, `/docs`, `/openapi.json`
+- Misc: `/docs`, `/openapi.json`
+
+`/bridge/reserves` is not part of rest-v2: it is served by the separate proof-of-reserves
+service (`bridge_reserves.py`, port 8010). That service reads the vault balance from
+the REST API (`KARLSEN_REST_URL`, now rest-v2 on 8003) and must be pointed at this API at
+cut-over.
 
 ## Left behind
 

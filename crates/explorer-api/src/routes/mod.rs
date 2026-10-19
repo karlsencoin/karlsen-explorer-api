@@ -8,6 +8,7 @@ use crate::AppState;
 
 pub mod address_transactions;
 pub mod addresses;
+pub mod analytics;
 pub mod blocks;
 pub mod dag_window;
 pub mod health;
@@ -38,7 +39,23 @@ pub fn router(state: AppState) -> Router {
         .route("/info/peers/geo", get(peers::peers_geo))
         .route("/info/seeder-nodes", get(peers::seeder_nodes))
         .route("/admin/seed-candidates", get(peers::seed_candidates))
+        .route("/blocks", get(blocks::list_blocks))
         .route("/blocks/{block_id}", get(blocks::get_block))
+        .route("/analytics/addresses/top", get(analytics::top))
+        .route("/analytics/addresses/total", get(analytics::total))
+        .route(
+            "/analytics/addresses/distribution",
+            get(analytics::distribution),
+        )
+        .route("/analytics/addresses/range", get(analytics::range))
+        .route(
+            "/analytics/addresses/distribution-summary",
+            get(analytics::distribution_summary),
+        )
+        .route(
+            "/analytics/addresses/{address}/history",
+            get(analytics::history),
+        )
         .route("/addresses/{address}/balance", get(addresses::get_balance))
         .route("/addresses/{address}/utxos", get(addresses::get_utxos))
         .route("/addresses/balances", post(addresses::post_balances))

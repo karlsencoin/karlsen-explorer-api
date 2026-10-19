@@ -79,3 +79,7 @@ legacy responses in `tests/fixtures/golden-*.json`.
 | `GET /info/miners/top`, `/info/miners/network`, `/info/miners/address/{address}` | KGI reward tracker SQLite (`KGI_TRACKER_DB`), opened read-only; `limit`, `recent_hours`, `hours` |
 | `GET /info/nodes`, `/info/peers/geo`, `/info/seeder-nodes` | KGI scanner files (`discovered_nodes.json`, `seeder_history.json`, `geo_cache.json`) + `peer_geo` history (7-day window) + `node_history.db` inbound streaks, all read-only; IPs masked to /16 |
 | `GET /admin/seed-candidates` | full IPs for the operator; `X-KGI-Admin` must equal `KGI_ADMIN_TOKEN` (404 when unset) |
+| `GET /blocks` | karlsend `getBlocks` from `lowHash`; `includeBlocks`, `includeTransactions`; `extra` is `null`, empty lists on node failure (as legacy) |
+| `GET /analytics/addresses/top`, `/range`, `/total`, `/distribution` | `balances` table; rich list with 24h trend from `top_balance_snapshots`; equal balances ordered by address |
+| `GET /analytics/addresses/distribution-summary` | tier counts and balances with 1d / 7d deltas from `distribution_snapshots` |
+| `GET /analytics/addresses/{address}/history` | received / sent / net per transaction, newest first; `limit` 1..200 |
