@@ -1,0 +1,29 @@
+[Unit]
+Description=Karlsen Explorer API (Rust, replaces rest-v2)
+Documentation=https://github.com/karlsencoin/karlsen-explorer-api
+After=network-online.target postgresql.service karlsend.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/karlsen-explorer-api
+EnvironmentFile=/opt/karlsen-explorer-api/.env
+ExecStart=/opt/karlsen-explorer-api/karlsen-explorer-api
+Restart=always
+RestartSec=5
+
+# Read-only API: it needs no new privileges and no shared /tmp. The SQLite
+# readers (KGI tracker, peer_geo) keep their WAL index files next to the
+# databases, so the file system is not made read-only here.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+
+MemoryMax=1G
+LimitNOFILE=8192
+
+[Install]
+WantedBy=multi-user.target
