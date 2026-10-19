@@ -139,6 +139,15 @@ def norm_utxos(lv, nv):
     return lv, nv
 
 
+def norm_halving(lv, nv):
+    # The timestamp is "now + remaining time": compare it to the minute.
+    for v in (lv, nv):
+        if isinstance(v, dict):
+            v["nextHalvingTimestamp"] = int(v.get("nextHalvingTimestamp", 0)) // 60
+            v["nextHalvingDate"] = str(v.get("nextHalvingDate", ""))[:16]
+    return lv, nv
+
+
 def norm_tx(lv, nv):
     return prefix_addresses(lv), nv
 
@@ -187,6 +196,14 @@ def main():
     bs = int(blocks[DEPTH]["header"]["blueScore"])
     check("search by blue score", "/transactions/search",
           {"acceptingBlueScores": {"gte": bs - 3, "lt": bs}}, normalise=norm_tx)
+
+    print("-- info (node-backed; tip values move, so some checks may show LIVE)")
+    for path in ("/info/blockdag", "/info/network", "/info/hashrate", "/info/hashrate?stringOnly=true",
+                 "/info/coinsupply", "/info/coinsupply/circulating", "/info/coinsupply/circulating?in_billion=true",
+                 "/info/coinsupply/total", "/info/blockreward", "/info/blockreward?stringOnly=true",
+                 "/info/karlsend", "/info/halving?field=nextHalvingAmount"):
+        check(path, path)
+    check("/info/halving (amount, date to the minute)", "/info/halving", normalise=norm_halving)
 
     print("-- intended differences (new behaviour checked, legacy shown)")
     bad = ADDRESSES[0][:-1] + ("q" if ADDRESSES[0][-1] != "q" else "p")

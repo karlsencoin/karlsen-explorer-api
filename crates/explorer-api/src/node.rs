@@ -19,7 +19,9 @@ pub mod proto {
 use proto::{
     karlsend_request::Payload as Req, karlsend_response::Payload as Resp, rpc_client::RpcClient,
     GetBalanceByAddressRequestMessage, GetBalancesByAddressesRequestMessage,
-    GetBlockRequestMessage, GetCurrentBlockColorRequestMessage, GetUtxosByAddressesRequestMessage,
+    GetBlockDagInfoRequestMessage, GetBlockDagInfoResponseMessage, GetBlockRequestMessage,
+    GetCoinSupplyRequestMessage, GetCoinSupplyResponseMessage, GetCurrentBlockColorRequestMessage,
+    GetInfoRequestMessage, GetInfoResponseMessage, GetUtxosByAddressesRequestMessage,
     KarlsendRequest, RpcBalancesByAddressesEntry, RpcBlock, RpcUtxosByAddressesEntry,
 };
 
@@ -108,6 +110,47 @@ impl NodeClient {
         }
         Ok(r.block
             .filter(|b| b.verbose_data.as_ref().is_some_and(|v| !v.is_header_only)))
+    }
+
+    pub async fn get_block_dag_info(&self) -> Result<GetBlockDagInfoResponseMessage, NodeError> {
+        match self
+            .call(Req::GetBlockDagInfoRequest(
+                GetBlockDagInfoRequestMessage {},
+            ))
+            .await?
+        {
+            Resp::GetBlockDagInfoResponse(r) => match r.error {
+                Some(e) => Err(NodeError::Rpc(e.message)),
+                None => Ok(r),
+            },
+            _ => Err(NodeError::UnexpectedReply),
+        }
+    }
+
+    pub async fn get_coin_supply(&self) -> Result<GetCoinSupplyResponseMessage, NodeError> {
+        match self
+            .call(Req::GetCoinSupplyRequest(GetCoinSupplyRequestMessage {}))
+            .await?
+        {
+            Resp::GetCoinSupplyResponse(r) => match r.error {
+                Some(e) => Err(NodeError::Rpc(e.message)),
+                None => Ok(r),
+            },
+            _ => Err(NodeError::UnexpectedReply),
+        }
+    }
+
+    pub async fn get_info(&self) -> Result<GetInfoResponseMessage, NodeError> {
+        match self
+            .call(Req::GetInfoRequest(GetInfoRequestMessage {}))
+            .await?
+        {
+            Resp::GetInfoResponse(r) => match r.error {
+                Some(e) => Err(NodeError::Rpc(e.message)),
+                None => Ok(r),
+            },
+            _ => Err(NodeError::UnexpectedReply),
+        }
     }
 
     /// Confirmed balance in sompi. Needs karlsend running with `--utxoindex`.

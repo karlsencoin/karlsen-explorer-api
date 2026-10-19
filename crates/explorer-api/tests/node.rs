@@ -18,7 +18,8 @@ use karlsen_explorer_api::{
             karlsend_response::Payload as Resp,
             rpc_server::{Rpc, RpcServer},
             GetBalanceByAddressResponseMessage, GetBalancesByAddressesResponseMessage,
-            GetBlockResponseMessage, GetCurrentBlockColorResponseMessage,
+            GetBlockDagInfoResponseMessage, GetBlockResponseMessage, GetCoinSupplyResponseMessage,
+            GetCurrentBlockColorResponseMessage, GetInfoResponseMessage,
             GetUtxosByAddressesResponseMessage, KarlsendRequest, KarlsendResponse,
             RpcBalancesByAddressesEntry, RpcBlock, RpcBlockHeader, RpcBlockLevelParents,
             RpcBlockVerboseData, RpcError, RpcOutpoint, RpcScriptPublicKey, RpcTransaction,
@@ -173,6 +174,9 @@ struct MockNode {
     utxos: Vec<RpcUtxosByAddressesEntry>,
     /// Simulates karlsend without --utxoindex.
     no_utxoindex: bool,
+    dag_info: Option<GetBlockDagInfoResponseMessage>,
+    coin_supply: Option<GetCoinSupplyResponseMessage>,
+    info: Option<GetInfoResponseMessage>,
 }
 
 impl MockNode {
@@ -238,6 +242,13 @@ impl MockNode {
                     error: self.index_error(),
                 })
             }
+            Req::GetBlockDagInfoRequest(_) => {
+                Resp::GetBlockDagInfoResponse(self.dag_info.clone().expect("dag_info set"))
+            }
+            Req::GetCoinSupplyRequest(_) => {
+                Resp::GetCoinSupplyResponse(self.coin_supply.clone().expect("coin_supply set"))
+            }
+            Req::GetInfoRequest(_) => Resp::GetInfoResponse(self.info.clone().expect("info set")),
             other => panic!("unexpected request {other:?}"),
         }
     }
@@ -558,4 +569,120 @@ async fn node_failures_are_503_never_zero() {
             .status,
         503
     );
+}
+
+// ---- /info ----
+
+const INFO_BLOCKDAG: &str = include_str!("fixtures/golden-info-blockdag.json");
+
+fn info_node() -> MockNode {
+    let g: Value = serde_json::from_str(INFO_BLOCKDAG).unwrap();
+    let supply: Value =
+        serde_json::from_str(include_str!("fixtures/golden-info-coinsupply.json")).unwrap();
+    let k: Value =
+        serde_json::from_str(include_str!("fixtures/golden-info-karlsend.json")).unwrap();
+    MockNode {
+        dag_info: Some(GetBlockDagInfoResponseMessage {
+            // The node may report the bare name; the API must prefix it.
+            network_name: "mainnet".into(),
+            block_count: n(&g["blockCount"]),
+            header_count: n(&g["headerCount"]),
+            tip_hashes: strs(&g["tipHashes"]),
+            difficulty: difficulty_literal(INFO_BLOCKDAG).parse().unwrap(),
+            past_median_time: n(&g["pastMedianTime"]) as i64,
+            virtual_parent_hashes: strs(&g["virtualParentHashes"]),
+            pruning_point_hash: s(&g["pruningPointHash"]),
+            virtual_daa_score: n(&g["virtualDaaScore"]),
+            sink: s(&g["sink"]),
+            error: None,
+        }),
+        coin_supply: Some(GetCoinSupplyResponseMessage {
+            max_sompi: 0,
+            circulating_sompi: n(&supply["circulatingSupply"]),
+            error: None,
+        }),
+        info: Some(GetInfoResponseMessage {
+            p2p_id: "test-p2p-id".into(),
+            mempool_size: n(&k["mempoolSize"]),
+            server_version: s(&k["serverVersion"]),
+            is_utxo_indexed: true,
+            is_synced: true,
+            has_notify_command: true,
+            has_message_id: true,
+            error: None,
+        }),
+        ..MockNode::default()
+    }
+}
+
+fn text(r: &common::Reply) -> &str {
+    std::str::from_utf8(&r.body).unwrap()
+}
+
+#[tokio::test]
+async fn info_answers_are_byte_identical_to_production() {
+    let app = app_with_mock(info_node()).await;
+    let cases = [
+        ("/info/blockdag", INFO_BLOCKDAG),
+        ("/info/network", INFO_BLOCKDAG),
+        (
+            "/info/hashrate",
+            include_str!("fixtures/golden-info-hashrate.json"),
+        ),
+        (
+            "/info/hashrate?stringOnly=true",
+            include_str!("fixtures/golden-info-hashrate-string.json"),
+        ),
+        (
+            "/info/coinsupply",
+            include_str!("fixtures/golden-info-coinsupply.json"),
+        ),
+        (
+            "/info/coinsupply/circulating",
+            include_str!("fixtures/golden-info-circulating.txt"),
+        ),
+        (
+            "/info/coinsupply/total",
+            include_str!("fixtures/golden-info-circulating.txt"),
+        ),
+        (
+            "/info/blockreward",
+            include_str!("fixtures/golden-info-blockreward.json"),
+        ),
+    ];
+    for (uri, want) in cases {
+        let r = request(&app, uri).await;
+        assert_eq!(r.status, 200, "{uri}");
+        assert_eq!(text(&r), want, "{uri}");
+    }
+    let r = request(&app, "/info/coinsupply/circulating?in_billion=true").await;
+    assert_eq!(text(&r), "3.13");
+    let r = request(&app, "/info/blockreward?stringOnly=true").await;
+    assert_eq!(text(&r), "\"19.51\"");
+}
+
+#[tokio::test]
+async fn halving_and_karlsend_follow_production_shape() {
+    let app = app_with_mock(info_node()).await;
+    let want: Value =
+        serde_json::from_str(include_str!("fixtures/golden-info-halving.json")).unwrap();
+    let got = request(&app, "/info/halving").await.json();
+    // The timestamp is "now + remaining time", so only the amount is fixed.
+    assert_eq!(got["nextHalvingAmount"], want["nextHalvingAmount"]);
+    let keys = |v: &Value| v.as_object().unwrap().keys().cloned().collect::<Vec<_>>();
+    assert_eq!(keys(&got), keys(&want));
+    let ts = got["nextHalvingTimestamp"].as_i64().unwrap();
+    assert!(got["nextHalvingDate"].as_str().unwrap().ends_with(" UTC"));
+    let r = request(&app, "/info/halving?field=nextHalvingAmount").await;
+    assert_eq!(text(&r), "18.97285061");
+    let r = request(&app, "/info/halving?field=nextHalvingTimestamp").await;
+    let plain: f64 = text(&r).parse().unwrap();
+    assert!((plain - ts as f64).abs() < 5.0);
+
+    let got = request(&app, "/info/karlsend").await.json();
+    let mut want: Value =
+        serde_json::from_str(include_str!("fixtures/golden-info-karlsend.json")).unwrap();
+    // Production hashes its own P2P id; the mock's id is "test-p2p-id".
+    want["p2pIdHashed"] = "e4ef16763cddf835522936c34598e73c49a16a66a8944319ac4c2fe9a682c265".into();
+    assert_eq!(got, want);
 }

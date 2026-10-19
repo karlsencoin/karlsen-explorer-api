@@ -18,6 +18,13 @@ for what must be checked against the live legacy API before cut-over.
 - **Configuration only through environment variables.** No credentials, e-mail
   addresses or hostnames live in this repository (see `.env.example`).
 
+## Configuration for `/info`
+
+`BPS` (default `1`, as the legacy production setting) feeds the hashrate and halving
+formulas; `MAX_SUPPLY_KLS` (default `4960848817`) is reported by `/info/coinsupply`.
+Floats are written the way Python's `repr` writes them (`src/pyfloat.rs`), because
+clients were built against the Python service (`8.3549e-05`, not `8.3549e-5`).
+
 ## Data sources
 
 Like the Kaspa REST server, block lookups ask **karlsend** first (gRPC,
@@ -62,3 +69,8 @@ legacy responses in `tests/fixtures/golden-*.json`.
 | `GET /addresses/{address}/transactions-count` | `{"total": n}` |
 | `GET /transactions/{transactionId}` | `inputs`, `outputs`, `resolve_previous_outpoints` |
 | `POST /transactions/search` | `transactionIds` (max 1000) or `acceptingBlueScores` (range max 100); `fields`, `acceptance` |
+| `GET /info/blockdag`, `/info/network` | node |
+| `GET /info/hashrate` | `difficulty × 2 × BPS / 1e12` (TH/s), `stringOnly` |
+| `GET /info/coinsupply`, `/coinsupply/circulating`, `/coinsupply/total` | node; plain text for the last two, `in_billion` |
+| `GET /info/blockreward`, `/info/halving` | Karlsen emission table (`src/emission.rs`), `stringOnly`, `field` |
+| `GET /info/karlsend` | node; P2P id only as SHA-256 |
