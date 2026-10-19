@@ -10,9 +10,14 @@ are intended (see docs/VERIFY.md) are normalised away before comparing:
   - legacy leaves extra.minerAddress / extra.minerInfo null
   - UTXO lists come back in node order, which changes between calls
 Only the Python standard library is used; nothing is written to disk.
+
+The mining pool address (the coinbase address picked below) has 200k+ UTXOs: its
+UTXO list is skipped unless HEAVY=1 is set, because loading it in legacy, the new
+API and this script at once can exhaust the VPS memory.
 """
 
 import json
+import os
 import sys
 import time
 import urllib.error
@@ -204,9 +209,13 @@ def main():
     miner = (blocks[DEPTH].get("transactions") or [{}])[0]
     miner_addr = ((miner.get("outputs") or [{}])[0].get("verboseData") or {}).get("scriptPublicKeyAddress")
     addrs = ADDRESSES + ([miner_addr] if miner_addr else [])
+    heavy = os.environ.get("HEAVY") == "1"
     for a in addrs:
         check(f"balance {a[:20]}", f"/addresses/{a}/balance")
-        check(f"utxos {a[:20]}", f"/addresses/{a}/utxos", normalise=norm_utxos)
+        if a == miner_addr and not heavy:
+            print(f"SKIP  utxos {a[:20]}  (pool address, 200k+ UTXOs; set HEAVY=1 to include)")
+        else:
+            check(f"utxos {a[:20]}", f"/addresses/{a}/utxos", normalise=norm_utxos)
         check(f"tx count {a[:20]}", f"/addresses/{a}/transactions-count")
         for q in ("limit=5", "limit=5&offset=5", "limit=3&resolve_previous_outpoints=light",
                   "limit=2&resolve_previous_outpoints=full", "limit=5&fields=transaction_id,block_time"):
