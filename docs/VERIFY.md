@@ -146,6 +146,12 @@ Open for 10 BPS: `transactions-count` runs `count(*)` over the address's rows an
 with its history; the pool address's UTXO list is a ~multi-MB answer. Both need a
 decision (per-address counter table, cap or paging) before cut-over.
 
+### Fourth run, with `/info` (2026-10-19)
+
+73 PASS, 0 FAIL, 2 LIVE (the pool address again). All 16 `/info` checks pass against
+production, including `price` / `market-data` through the real NonKYC ticker. Node-backed
+`/info` answers take 1–2 ms (legacy 2–7 ms).
+
 ## Still unverified
 
 - Real karlsend gRPC behaviour of `getCurrentBlockColor` for a red block, and of
