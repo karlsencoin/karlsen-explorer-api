@@ -161,6 +161,14 @@ behind the tip; `miners/network`, `miners/top?limit=5&recent_hours=0` and two
 `miners/address` details match exactly. Both services read the same tracker file
 (`/opt/karlsen/kgi` is bind-mounted into the legacy container at the same path).
 
+### Sixth run, with the KGI node map (2026-10-19)
+
+84 PASS, 0 FAIL, 0 LIVE. New: `/info/nodes`, `/info/peers/geo`, `/info/seeder-nodes`
+match legacy (ages compared to the minute). The pool address UTXO list is now skipped
+by default (`HEAVY=1` includes it): loading 200k+ UTXOs in legacy, the new API and the
+script at once pushed the VPS into swap. Pool `transactions-count`: legacy 3.7 s, new
+1 ms (in-memory count cache).
+
 ## Still unverified
 
 - Real karlsend gRPC behaviour of `getCurrentBlockColor` for a red block, and of
