@@ -127,6 +127,25 @@ including key order.
   latency, the indexer can be configured to store them on the inputs; the code already
   prefers stored values when present.
 
+## Live comparison (`scripts/compare-legacy.py`, 2026-10-19)
+
+Both services side by side on the production VPS, same database and node. Third run:
+57 PASS, 0 FAIL, 2 LIVE (a mining pool address that changed between the two calls).
+Typical response times, legacy vs new:
+
+| Request | Legacy | New |
+| --- | --- | --- |
+| `/blocks/{hash}` (node) | 5–14 ms | 1–6 ms |
+| `/transactions/{id}` | 12–26 ms | 3–9 ms |
+| `full-transactions` (5 txs) | 13–85 ms | 3–14 ms |
+| `utxos`, pool address (≈215 k UTXOs) | 40.9 s | 2.2 s |
+| `transactions-count`, pool address (≈15.3 M txs) | 2.7 s | 1.7 s |
+| `balance` (node) | 5–240 ms | 3–276 ms |
+
+Open for 10 BPS: `transactions-count` runs `count(*)` over the address's rows and grows
+with its history; the pool address's UTXO list is a ~multi-MB answer. Both need a
+decision (per-address counter table, cap or paging) before cut-over.
+
 ## Still unverified
 
 - Real karlsend gRPC behaviour of `getCurrentBlockColor` for a red block, and of
