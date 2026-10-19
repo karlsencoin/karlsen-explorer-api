@@ -6,6 +6,7 @@ pub mod config;
 pub mod difficulty;
 pub mod emission;
 pub mod error;
+pub mod market;
 pub mod miner;
 pub mod node;
 pub mod pyfloat;

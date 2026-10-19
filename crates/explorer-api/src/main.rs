@@ -22,7 +22,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     };
 
-    let app = routes::router(AppState { db, node });
+    let app = routes::router(AppState::new(db, node));
     let listener = tokio::net::TcpListener::bind(config.listen_addr).await?;
     tracing::info!(addr = %config.listen_addr, "listening");
     axum::serve(listener, app)

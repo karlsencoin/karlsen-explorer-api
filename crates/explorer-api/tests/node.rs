@@ -300,10 +300,7 @@ async fn start_mock(node: MockNode) -> SocketAddr {
 async fn app_with_mock(node: MockNode) -> axum::Router {
     let addr = start_mock(node).await;
     let client = NodeClient::new(&format!("http://{addr}"), Duration::from_secs(5)).unwrap();
-    routes::router(AppState {
-        db: dead_pool(),
-        node: Some(client),
-    })
+    routes::router(AppState::new(dead_pool(), Some(client)))
 }
 
 fn golden_node() -> MockNode {
@@ -559,10 +556,7 @@ async fn node_failures_are_503_never_zero() {
     assert_eq!(post(&app, "/addresses/balances", &body).await.status, 503);
 
     // No node configured at all.
-    let app = routes::router(AppState {
-        db: dead_pool(),
-        node: None,
-    });
+    let app = routes::router(AppState::new(dead_pool(), None));
     assert_eq!(
         request(&app, &format!("/addresses/{A1}/balance"))
             .await
@@ -685,4 +679,58 @@ async fn halving_and_karlsend_follow_production_shape() {
     // Production hashes its own P2P id; the mock's id is "test-p2p-id".
     want["p2pIdHashed"] = "e4ef16763cddf835522936c34598e73c49a16a66a8944319ac4c2fe9a682c265".into();
     assert_eq!(got, want);
+}
+
+// ---- /info/price, /info/market-data ----
+
+/// NonKYC ticker values behind the production capture (numbers as strings, as
+/// NonKYC sends them).
+const TICKER: &str = r#"{"ticker_id":"KLS_USDT","last_price":"0.000083549","high":"0.00015","low":"0.000069",
+"bid":"0.000083244","ask":"0.00008355","base_volume":"13718051.1385","usd_volume_est":"1390.75",
+"change_percent":"-30.35","previous_day_price":"0.000119966"}"#;
+
+async fn start_ticker(body: &'static str, status: u16) -> String {
+    use axum::{http::StatusCode, routing::get, Router};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let app = Router::new().route(
+        "/ticker",
+        get(move || async move { (StatusCode::from_u16(status).unwrap(), body) }),
+    );
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    format!("http://{addr}/ticker")
+}
+
+async fn app_with_market(ticker_url: &str) -> axum::Router {
+    let addr = start_mock(info_node()).await;
+    let client = NodeClient::new(&format!("http://{addr}"), Duration::from_secs(5)).unwrap();
+    let mut state = AppState::new(dead_pool(), Some(client));
+    state.market = karlsen_explorer_api::market::MarketFeed::new(ticker_url);
+    routes::router(state)
+}
+
+#[tokio::test]
+async fn price_and_market_data_are_byte_identical_to_production() {
+    let app = app_with_market(&start_ticker(TICKER, 200).await).await;
+    let r = request(&app, "/info/price").await;
+    assert_eq!(text(&r), include_str!("fixtures/golden-info-price.json"));
+    let r = request(&app, "/info/price?stringOnly=true").await;
+    assert_eq!(text(&r), "8.3549e-05");
+    let r = request(&app, "/info/market-data").await;
+    assert_eq!(r.status, 200, "{}", text(&r));
+    assert_eq!(
+        text(&r),
+        include_str!("fixtures/golden-info-market-data.json")
+    );
+}
+
+#[tokio::test]
+async fn price_source_down_is_503_not_zero() {
+    // Legacy answered {"price": 0} here.
+    let app = app_with_market(&start_ticker("upstream error", 502).await).await;
+    for uri in ["/info/price", "/info/market-data"] {
+        let r = request(&app, uri).await;
+        assert_eq!(r.status, 503, "{uri}");
+        assert_eq!(r.json()["detail"], "Service temporarily unavailable");
+    }
 }

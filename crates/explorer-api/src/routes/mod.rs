@@ -25,6 +25,8 @@ pub fn router(state: AppState) -> Router {
         .route("/info/blockreward", get(info::blockreward))
         .route("/info/halving", get(info::halving))
         .route("/info/karlsend", get(info::karlsend))
+        .route("/info/price", get(info::price))
+        .route("/info/market-data", get(info::market_data))
         .route("/blocks/{block_id}", get(blocks::get_block))
         .route("/addresses/{address}/balance", get(addresses::get_balance))
         .route("/addresses/{address}/utxos", get(addresses::get_utxos))

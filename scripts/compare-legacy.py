@@ -201,7 +201,10 @@ def main():
     for path in ("/info/blockdag", "/info/network", "/info/hashrate", "/info/hashrate?stringOnly=true",
                  "/info/coinsupply", "/info/coinsupply/circulating", "/info/coinsupply/circulating?in_billion=true",
                  "/info/coinsupply/total", "/info/blockreward", "/info/blockreward?stringOnly=true",
-                 "/info/karlsend", "/info/halving?field=nextHalvingAmount"):
+                 "/info/karlsend", "/info/halving?field=nextHalvingAmount",
+                 # Price data is cached up to 60 s on both sides, at different moments:
+                 # a mismatch here right after a price move is expected.
+                 "/info/price", "/info/price?stringOnly=true", "/info/market-data"):
         check(path, path)
     check("/info/halving (amount, date to the minute)", "/info/halving", normalise=norm_halving)
 

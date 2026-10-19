@@ -155,10 +155,10 @@ async fn health_ok_and_database_outage_is_a_real_503() {
     db.teardown().await;
 
     // Unreachable database must surface as 503, never as an empty success.
-    let app = karlsen_explorer_api::routes::router(karlsen_explorer_api::AppState {
-        db: common::dead_pool(),
-        node: None,
-    });
+    let app = karlsen_explorer_api::routes::router(karlsen_explorer_api::AppState::new(
+        common::dead_pool(),
+        None,
+    ));
     let (s, v) = get(&app, "/info/health").await;
     assert_eq!(s, 503);
     assert_eq!(v["detail"], "Service temporarily unavailable");

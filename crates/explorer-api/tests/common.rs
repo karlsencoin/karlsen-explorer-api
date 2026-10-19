@@ -68,16 +68,10 @@ fn rand_suffix() -> u128 {
 
 impl TestDb {
     pub fn app(&self) -> Router {
-        routes::router(AppState {
-            db: self.pool.clone(),
-            node: None,
-        })
+        routes::router(AppState::new(self.pool.clone(), None))
     }
     pub fn app_with_node(&self, node: NodeClient) -> Router {
-        routes::router(AppState {
-            db: self.pool.clone(),
-            node: Some(node),
-        })
+        routes::router(AppState::new(self.pool.clone(), Some(node)))
     }
     pub async fn teardown(self) {
         self.pool.close().await;

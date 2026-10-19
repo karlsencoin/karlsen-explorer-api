@@ -291,6 +291,113 @@ pub async fn karlsend(State(state): State<AppState>) -> Result<Json<KarlsendInfo
     }))
 }
 
+// ---- /info/price, /info/market-data (NonKYC) ----
+
+async fn ticker(state: &AppState) -> Result<crate::market::Ticker, ApiError> {
+    match state.market.ticker().await {
+        Ok((t, _stale)) => Ok(t),
+        Err(e) => {
+            tracing::error!(error = %e, "no KLS price available");
+            Err(ApiError::Unavailable("price source unavailable"))
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+struct Price {
+    price: PyFloat,
+}
+
+/// Last KLS/USDT price. Legacy answered `0` when NonKYC failed; this API serves the
+/// last good price, or 503 if it never had one.
+pub async fn price(
+    State(state): State<AppState>,
+    Query(q): Query<StringOnly>,
+) -> Result<Response, ApiError> {
+    let t = ticker(&state).await?;
+    Ok(if q.string_only {
+        plain_text(repr(t.last_price))
+    } else {
+        Json(Price {
+            price: PyFloat(t.last_price),
+        })
+        .into_response()
+    })
+}
+
+#[derive(Debug, Serialize)]
+struct Usd {
+    usd: PyFloat,
+}
+
+#[derive(Debug, Serialize)]
+pub struct MarketData {
+    current_price: Usd,
+    price_change_percentage_24h: PyFloat,
+    high_24h: Usd,
+    low_24h: Usd,
+    total_volume: Usd,
+    market_cap: Usd,
+    circulating_supply: PyFloat,
+    best_bid: PyFloat,
+    best_ask: PyFloat,
+    volume_kls: PyFloat,
+    previous_day_price: PyFloat,
+    price_direction: &'static str,
+    spread_percent: PyFloat,
+}
+
+/// Python `round(x, n)` for the magnitudes used here.
+fn round_to(x: f64, digits: i32) -> f64 {
+    let f = 10f64.powi(digits);
+    (x * f).round() / f
+}
+
+pub async fn market_data(State(state): State<AppState>) -> Result<Json<MarketData>, ApiError> {
+    let (t, supply) = tokio::join!(ticker(&state), async {
+        node(&state)?
+            .get_coin_supply()
+            .await
+            .map_err(ApiError::from)
+    });
+    let t = t?;
+    let circulating = supply?.circulating_sompi as f64 / SOMPI_PER_KLS as f64;
+    let spread = if t.bid > 0.0 {
+        round_to((t.ask - t.bid) / t.bid * 100.0, 3)
+    } else {
+        0.0
+    };
+    Ok(Json(MarketData {
+        current_price: Usd {
+            usd: PyFloat(t.last_price),
+        },
+        price_change_percentage_24h: PyFloat(t.change_percent),
+        high_24h: Usd {
+            usd: PyFloat(t.high),
+        },
+        low_24h: Usd {
+            usd: PyFloat(t.low),
+        },
+        total_volume: Usd {
+            usd: PyFloat(t.usd_volume),
+        },
+        market_cap: Usd {
+            usd: PyFloat(round_to(t.last_price * circulating, 2)),
+        },
+        circulating_supply: PyFloat(circulating),
+        best_bid: PyFloat(t.bid),
+        best_ask: PyFloat(t.ask),
+        volume_kls: PyFloat(t.base_volume),
+        previous_day_price: PyFloat(t.previous_day_price),
+        price_direction: if t.last_price >= t.previous_day_price {
+            "up"
+        } else {
+            "down"
+        },
+        spread_percent: PyFloat(spread),
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::utc_date;

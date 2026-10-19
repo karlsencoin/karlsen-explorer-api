@@ -74,3 +74,4 @@ legacy responses in `tests/fixtures/golden-*.json`.
 | `GET /info/coinsupply`, `/coinsupply/circulating`, `/coinsupply/total` | node; plain text for the last two, `in_billion` |
 | `GET /info/blockreward`, `/info/halving` | Karlsen emission table (`src/emission.rs`), `stringOnly`, `field` |
 | `GET /info/karlsend` | node; P2P id only as SHA-256 |
+| `GET /info/price`, `/info/market-data` | NonKYC KLS/USDT ticker, cached 60 s; last good value if NonKYC fails, 503 if none |
