@@ -77,3 +77,5 @@ legacy responses in `tests/fixtures/golden-*.json`.
 | `GET /info/price`, `/info/market-data` | NonKYC KLS/USDT ticker, cached 60 s; last good value if NonKYC fails, 503 if none |
 | `GET /info/dag-window` | database; newest `limit` (1..1000, default 200) blocks, or blocks after `since_daa` (ascending, `no-store`) |
 | `GET /info/miners/top`, `/info/miners/network`, `/info/miners/address/{address}` | KGI reward tracker SQLite (`KGI_TRACKER_DB`), opened read-only; `limit`, `recent_hours`, `hours` |
+| `GET /info/nodes`, `/info/peers/geo`, `/info/seeder-nodes` | KGI scanner files (`discovered_nodes.json`, `seeder_history.json`, `geo_cache.json`) + `peer_geo` history (7-day window) + `node_history.db` inbound streaks, all read-only; IPs masked to /16 |
+| `GET /admin/seed-candidates` | full IPs for the operator; `X-KGI-Admin` must equal `KGI_ADMIN_TOKEN` (404 when unset) |

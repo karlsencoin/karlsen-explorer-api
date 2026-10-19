@@ -13,6 +13,7 @@ pub mod dag_window;
 pub mod health;
 pub mod info;
 pub mod miners;
+pub mod peers;
 pub mod transactions;
 
 pub fn router(state: AppState) -> Router {
@@ -33,6 +34,10 @@ pub fn router(state: AppState) -> Router {
         .route("/info/miners/top", get(miners::miners_top))
         .route("/info/miners/network", get(miners::miners_network))
         .route("/info/miners/address/{address}", get(miners::miner_detail))
+        .route("/info/nodes", get(peers::nodes))
+        .route("/info/peers/geo", get(peers::peers_geo))
+        .route("/info/seeder-nodes", get(peers::seeder_nodes))
+        .route("/admin/seed-candidates", get(peers::seed_candidates))
         .route("/blocks/{block_id}", get(blocks::get_block))
         .route("/addresses/{address}/balance", get(addresses::get_balance))
         .route("/addresses/{address}/utxos", get(addresses::get_utxos))

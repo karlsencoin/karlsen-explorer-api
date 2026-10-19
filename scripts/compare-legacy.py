@@ -161,6 +161,18 @@ def norm_dag_window(lv, nv):
     return lv, nv
 
 
+def norm_kgi(lv, nv):
+    # Ages are computed at request time: compare them to the minute.
+    def walk(v):
+        if isinstance(v, dict):
+            return {k: (x // 60 if k in ("inboundUptimeSec", "lastSeenAgoSec")
+                        and isinstance(x, int) else walk(x)) for k, x in v.items()}
+        if isinstance(v, list):
+            return [walk(x) for x in v]
+        return v
+    return walk(lv), walk(nv)
+
+
 def norm_tx(lv, nv):
     return prefix_addresses(lv), nv
 
@@ -233,6 +245,10 @@ def main():
     check("/info/miners/top?limit=5&recent_hours=0", "/info/miners/top?limit=5&recent_hours=0")
     for m in ((top or {}).get("miners") or [])[:2]:
         check(f"miner detail {m['address'][:20]}", f"/info/miners/address/{m['address']}?hours=6")
+
+    print("-- KGI node map (scanner files; legacy caches them up to 60 s, so LIVE is possible)")
+    for path in ("/info/nodes", "/info/peers/geo", "/info/seeder-nodes"):
+        check(path, path, normalise=norm_kgi)
 
     print("-- intended differences (new behaviour checked, legacy shown)")
     bad = ADDRESSES[0][:-1] + ("q" if ADDRESSES[0][-1] != "q" else "p")
