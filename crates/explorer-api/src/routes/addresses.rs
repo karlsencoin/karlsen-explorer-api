@@ -30,7 +30,7 @@ fn node(state: &AppState) -> Result<&NodeClient, ApiError> {
 }
 
 /// Full validation (charset, checksum, `karlsen` prefix), not just a pattern match.
-fn validate(address: &str) -> Result<(), ApiError> {
+pub(crate) fn validate(address: &str) -> Result<(), ApiError> {
     match decode(address) {
         Some((prefix, _, _)) if prefix == MAINNET_PREFIX => Ok(()),
         _ => Err(ApiError::Validation(format!("Invalid address: {address}"))),

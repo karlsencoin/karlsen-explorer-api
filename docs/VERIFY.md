@@ -92,6 +92,34 @@ read karlsend's UTXO index; the database has no live UTXO set, so there is no fa
   ours is `{"detail": "Invalid address: ..."}`.
 - Batch endpoints accept at most 1000 addresses (legacy had no limit).
 
+## Transactions (`/transactions/...`, `/addresses/{a}/full-transactions`)
+
+Captured 2026-10-19 (`golden-transaction.json`, `golden-transactions-search.json`,
+`golden-address-full-txs*.json`, `golden-address-tx-count.json`). `tests/transactions.rs`
+seeds rows generated from these captures and compares the responses with them,
+including key order.
+
+- Confirmed shape: snake_case keys in a fixed order; `mass`, `previous_outpoint_index`
+  and `sig_op_count` are strings; `payload` is `null` when empty; `block_hash` lists every
+  block containing the transaction; acceptance fields come from the accepting block;
+  `previous_outpoint_resolved` is absent unless `resolve_previous_outpoints=full`;
+  `fields=` keeps only the named keys; `full-transactions` sends `Cache-Control:
+  public, max-age=8` for the first page.
+- **Fixed:** legacy `full-transactions` and `search` return `script_public_key_address`
+  and `previous_outpoint_address` without the `karlsen:` prefix (`/transactions/{id}`
+  has it). The explorer compares these with the `karlsen:` address of the page, so
+  incoming/outgoing detection and address links break. Every address here carries the
+  prefix.
+- **Legacy inconsistency:** for transaction `f596f45c…`, which is in two blocks, legacy
+  returns `block_time` `…244` from `/transactions/{id}` and `…298` from `search`. This
+  API returns the stored `transactions.block_time` in both (pending: which value is stored).
+- Not ported: `full-transactions-page` (legacy answers every address with
+  `400 Invalid address`, and no caller in the logs uses it).
+- Pending database check: whether `addresses_transactions.address` is stored without the
+  prefix (assumed, like the output address column), and whether inputs carry
+  `previous_outpoint_script` / `previous_outpoint_amount` (if not, `light` / `full` look
+  the spent output up, which is slower).
+
 ## Still unverified
 
 - Real karlsend gRPC behaviour of `getCurrentBlockColor` for a red block, and of

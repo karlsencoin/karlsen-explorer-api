@@ -58,3 +58,7 @@ legacy responses in `tests/fixtures/golden-*.json`.
 | `GET /addresses/{address}/utxos` | karlsend UTXO index |
 | `POST /addresses/balances` | `{"addresses": [...]}`, at most 1000 per request |
 | `POST /addresses/utxos` | `{"addresses": [...]}`, at most 1000 per request |
+| `GET /addresses/{address}/full-transactions` | `limit` 1..500, `offset`, `fields`, `resolve_previous_outpoints=no\|light\|full` |
+| `GET /addresses/{address}/transactions-count` | `{"total": n}` |
+| `GET /transactions/{transactionId}` | `inputs`, `outputs`, `resolve_previous_outpoints` |
+| `POST /transactions/search` | `transactionIds` (max 1000) or `acceptingBlueScores` (range max 100); `fields`, `acceptance` |

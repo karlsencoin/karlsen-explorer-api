@@ -52,6 +52,10 @@ pub async fn setup() -> Option<TestDb> {
         .execute(&pool)
         .await
         .expect("seed");
+    sqlx::raw_sql(include_str!("fixtures/seed-transactions.sql"))
+        .execute(&pool)
+        .await
+        .expect("seed-transactions");
     Some(TestDb { pool, admin, name })
 }
 

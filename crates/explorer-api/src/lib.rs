@@ -9,5 +9,6 @@ pub mod miner;
 pub mod node;
 pub mod routes;
 pub mod state;
+pub mod transactions;
 
 pub use state::AppState;
