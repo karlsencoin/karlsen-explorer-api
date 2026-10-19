@@ -118,9 +118,11 @@ including key order.
   `400 Invalid address`, and no caller in the logs uses it).
 - Confirmed: `addresses_transactions.address` is stored without the `karlsen:` prefix
   (queries strip it).
-- Pending database check: whether inputs carry
-  `previous_outpoint_script` / `previous_outpoint_amount` (if not, `light` / `full` look
-  the spent output up, which is slower).
+- Confirmed: inputs do **not** carry `previous_outpoint_script` / `previous_outpoint_amount`
+  (both empty in production). `light` / `full` therefore look the spent outputs up with
+  one extra query per page (primary-key lookups on `transactions`). If this shows up in
+  latency, the indexer can be configured to store them on the inputs; the code already
+  prefers stored values when present.
 
 ## Still unverified
 
