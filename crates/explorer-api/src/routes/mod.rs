@@ -31,6 +31,7 @@ pub fn router(state: AppState) -> Router {
         .route("/info/karlsend", get(info::karlsend))
         .route("/info/price", get(info::price))
         .route("/info/market-data", get(info::market_data))
+        .route("/info/mempool", get(info::mempool))
         .route("/info/dag-window", get(dag_window::dag_window))
         .route("/info/miners/top", get(miners::miners_top))
         .route("/info/miners/network", get(miners::miners_network))

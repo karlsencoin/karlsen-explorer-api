@@ -410,3 +410,55 @@ mod tests {
         assert_eq!(utc_date(951_782_400), "2000-02-29 00:00:00 UTC");
     }
 }
+
+// ---- /info/mempool (new; used by the KGI mempool panel) ----
+
+/// At most this many transactions are listed; `count` is always the full size.
+const MEMPOOL_LIST_MAX: usize = 100;
+
+#[derive(Debug, Serialize)]
+struct MempoolTx {
+    #[serde(rename = "transactionId")]
+    transaction_id: String,
+    /// Fee in sompi.
+    fee: u64,
+    mass: u64,
+}
+
+#[derive(Debug, Serialize)]
+struct Mempool {
+    count: usize,
+    transactions: Vec<MempoolTx>,
+}
+
+/// Pending transactions, highest fee first. Not part of legacy rest-v2.
+pub async fn mempool(State(state): State<AppState>) -> Result<Response, ApiError> {
+    let entries = node(&state)?.get_mempool_entries().await?;
+    // Counted before decoding, so a missing verbose block never hides a pending tx.
+    let count = entries.len();
+    let mut txs: Vec<MempoolTx> = entries
+        .into_iter()
+        .filter_map(|e| {
+            let v = e.transaction?.verbose_data?;
+            Some(MempoolTx {
+                transaction_id: v.transaction_id,
+                fee: e.fee,
+                mass: v.compute_mass,
+            })
+        })
+        .collect();
+    txs.sort_by(|a, b| {
+        b.fee
+            .cmp(&a.fee)
+            .then_with(|| a.transaction_id.cmp(&b.transaction_id))
+    });
+    txs.truncate(MEMPOOL_LIST_MAX);
+    Ok((
+        [(axum::http::header::CACHE_CONTROL, "public, max-age=2")],
+        Json(Mempool {
+            count,
+            transactions: txs,
+        }),
+    )
+        .into_response())
+}

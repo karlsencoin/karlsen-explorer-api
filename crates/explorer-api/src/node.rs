@@ -22,8 +22,9 @@ use proto::{
     GetBlockDagInfoRequestMessage, GetBlockDagInfoResponseMessage, GetBlockRequestMessage,
     GetBlocksRequestMessage, GetBlocksResponseMessage, GetCoinSupplyRequestMessage,
     GetCoinSupplyResponseMessage, GetCurrentBlockColorRequestMessage, GetInfoRequestMessage,
-    GetInfoResponseMessage, GetUtxosByAddressesRequestMessage, KarlsendRequest,
-    RpcBalancesByAddressesEntry, RpcBlock, RpcUtxosByAddressesEntry,
+    GetInfoResponseMessage, GetMempoolEntriesRequestMessage, GetUtxosByAddressesRequestMessage,
+    KarlsendRequest, RpcBalancesByAddressesEntry, RpcBlock, RpcMempoolEntry,
+    RpcUtxosByAddressesEntry,
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -143,6 +144,25 @@ impl NodeClient {
             return Err(NodeError::Rpc(e.message));
         }
         Ok(r)
+    }
+
+    /// Transactions waiting in the node's mempool (orphans excluded).
+    pub async fn get_mempool_entries(&self) -> Result<Vec<RpcMempoolEntry>, NodeError> {
+        let reply = self
+            .call(Req::GetMempoolEntriesRequest(
+                GetMempoolEntriesRequestMessage {
+                    include_orphan_pool: false,
+                    filter_transaction_pool: false,
+                },
+            ))
+            .await?;
+        let Resp::GetMempoolEntriesResponse(r) = reply else {
+            return Err(NodeError::UnexpectedReply);
+        };
+        if let Some(e) = r.error {
+            return Err(NodeError::Rpc(e.message));
+        }
+        Ok(r.entries)
     }
 
     pub async fn get_block_dag_info(&self) -> Result<GetBlockDagInfoResponseMessage, NodeError> {
