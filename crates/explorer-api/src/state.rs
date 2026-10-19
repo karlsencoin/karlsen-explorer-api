@@ -1,6 +1,8 @@
+use std::sync::Arc;
+
 use sqlx::PgPool;
 
-use crate::{market::MarketFeed, node::NodeClient};
+use crate::{count_cache::CountCache, market::MarketFeed, node::NodeClient};
 
 #[derive(Clone)]
 pub struct AppState {
@@ -9,6 +11,8 @@ pub struct AppState {
     pub node: Option<NodeClient>,
     /// NonKYC ticker for `/info/price` and `/info/market-data`.
     pub market: MarketFeed,
+    /// Per-address transaction counts (see `count_cache`).
+    pub tx_counts: Arc<CountCache>,
 }
 
 impl AppState {
@@ -18,6 +22,7 @@ impl AppState {
             db,
             node,
             market: MarketFeed::from_env(),
+            tx_counts: Arc::new(CountCache::default()),
         }
     }
 }

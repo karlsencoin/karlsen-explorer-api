@@ -3,6 +3,7 @@
 
 pub mod address;
 pub mod config;
+pub mod count_cache;
 pub mod difficulty;
 pub mod emission;
 pub mod error;

@@ -106,16 +106,19 @@ pub async fn transactions_count(
     Path(address): Path<String>,
 ) -> Result<(HeaderMap, Json<TransactionCount>), ApiError> {
     validate(&address)?;
-    let (total,): (i64,) =
-        sqlx::query_as("SELECT count(*) FROM addresses_transactions WHERE address = $1")
-            .bind(stored_address(&address))
-            .fetch_one(&state.db)
-            .await?;
-    let ttl = match total {
-        n if n >= 1_000_000 => 600,
-        n if n >= 100_000 => 60,
-        n if n >= 10_000 => 20,
-        _ => 8,
-    };
+    let key = stored_address(&address).to_string();
+    let stored = key.clone();
+    let db = state.db.clone();
+    let (total, ttl) = state
+        .tx_counts
+        .get_or_load(&key, || async move {
+            let (n,): (i64,) =
+                sqlx::query_as("SELECT count(*) FROM addresses_transactions WHERE address = $1")
+                    .bind(&stored)
+                    .fetch_one(&db)
+                    .await?;
+            Ok::<_, ApiError>(n)
+        })
+        .await?;
     Ok((cache(ttl), Json(TransactionCount { total })))
 }
