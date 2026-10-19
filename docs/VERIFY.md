@@ -111,12 +111,14 @@ including key order.
   incoming/outgoing detection and address links break. Every address here carries the
   prefix.
 - **Legacy inconsistency:** for transaction `f596f45c…`, which is in two blocks, legacy
-  returns `block_time` `…244` from `/transactions/{id}` and `…298` from `search`. This
-  API returns the stored `transactions.block_time` in both (pending: which value is stored).
+  returns `block_time` `…244` from `/transactions/{id}` and `…298` from `search`. The
+  stored value is `…298` (`transactions` and `addresses_transactions`), which this API
+  returns from both endpoints.
 - Not ported: `full-transactions-page` (legacy answers every address with
   `400 Invalid address`, and no caller in the logs uses it).
-- Pending database check: whether `addresses_transactions.address` is stored without the
-  prefix (assumed, like the output address column), and whether inputs carry
+- Confirmed: `addresses_transactions.address` is stored without the `karlsen:` prefix
+  (queries strip it).
+- Pending database check: whether inputs carry
   `previous_outpoint_script` / `previous_outpoint_amount` (if not, `light` / `full` look
   the spent output up, which is slower).
 
