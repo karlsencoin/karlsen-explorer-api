@@ -5,3 +5,4 @@
 *.pem
 *.key
 /golden/live/
+__pycache__/
