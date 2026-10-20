@@ -13,6 +13,7 @@ pub mod blocks;
 pub mod dag_window;
 pub mod health;
 pub mod info;
+pub mod live;
 pub mod miners;
 pub mod peers;
 pub mod transactions;
@@ -20,6 +21,8 @@ pub mod transactions;
 pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/info/health", get(health::health))
+        .route("/live/stream", get(live::stream))
+        .route("/live/recent", get(live::recent))
         .route("/info/blockdag", get(info::blockdag))
         .route("/info/network", get(info::blockdag))
         .route("/info/hashrate", get(info::hashrate))

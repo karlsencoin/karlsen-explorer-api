@@ -14,7 +14,7 @@ path = "src/main.rs"
 
 [dependencies]
 axum = "0.8"
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal", "sync", "time"] }
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres", "derive"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order", "raw_value"] }
@@ -27,7 +27,7 @@ hex = "0.4"
 tonic = "0.14"
 tonic-prost = "0.14"
 prost = "0.14"
-tokio-stream = "0.1"
+tokio-stream = { version = "0.1", features = ["sync"] }
 rusqlite = { version = "0.37", features = ["bundled"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 

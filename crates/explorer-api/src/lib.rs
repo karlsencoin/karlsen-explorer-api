@@ -7,6 +7,7 @@ pub mod count_cache;
 pub mod difficulty;
 pub mod emission;
 pub mod error;
+pub mod live;
 pub mod market;
 pub mod miner;
 pub mod node;

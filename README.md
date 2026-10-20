@@ -25,6 +25,25 @@ formulas; `MAX_SUPPLY_KLS` (default `4960848817`) is reported by `/info/coinsupp
 Floats are written the way Python's `repr` writes them (`src/pyfloat.rs`), because
 clients were built against the Python service (`8.3549e-05`, not `8.3549e-5`).
 
+## Live feed
+
+One background task holds a single persistent `notifyBlockAdded` subscription to
+karlsend and fans blocks out to every `/live/stream` client, so node load does not
+grow with the number of viewers. Blocks are batched before sending. It reconnects
+with backoff (1 s up to 30 s) and also when the node stays silent for
+`LIVE_IDLE_TIMEOUT_S`.
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `LIVE_BATCH_MS` | `250` | collect blocks this long before one batch is sent |
+| `LIVE_RECENT_BLOCKS` | `50` | blocks in the snapshot a new client receives |
+| `LIVE_IDLE_TIMEOUT_S` | `60` | reconnect when no message arrives for this long |
+| `LIVE_MAX_CLIENTS` | `500` | concurrent stream clients; more get 503 |
+
+Behind nginx the stream needs `proxy_buffering off;` (the response also sends
+`X-Accel-Buffering: no`) and a `proxy_read_timeout` above the 15 s keep-alive.
+Amounts are sompi strings; the first output's address is derived from its script.
+
 ## Data sources
 
 Like the Kaspa REST server, block lookups ask **karlsend** first (gRPC,
@@ -84,3 +103,5 @@ legacy responses in `tests/fixtures/golden-*.json`.
 | `GET /analytics/addresses/top`, `/range`, `/total`, `/distribution` | `balances` table; rich list with 24h trend from `top_balance_snapshots`; equal balances ordered by address |
 | `GET /analytics/addresses/distribution-summary` | tier counts and balances with 1d / 7d deltas from `distribution_snapshots` |
 | `GET /analytics/addresses/{address}/history` | received / sent / net per transaction, newest first; `limit` 1..200 |
+| `GET /live/stream` | new: Server-Sent Events. `snapshot` (recent blocks) on connect, then `blocks` batches; `lagged` if a client fell behind. One shared karlsend `BlockAdded` subscription for all clients; 503 above `LIVE_MAX_CLIENTS` |
+| `GET /live/recent` | new: the same snapshot as JSON; `X-Live-Connected` tells whether the node subscription is up |

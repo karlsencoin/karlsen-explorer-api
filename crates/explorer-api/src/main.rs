@@ -1,4 +1,9 @@
-use karlsen_explorer_api::{config::Config, node::NodeClient, routes, AppState};
+use karlsen_explorer_api::{
+    config::Config,
+    live::{LiveConfig, LiveHub},
+    node::NodeClient,
+    routes, AppState,
+};
 use sqlx::postgres::PgPoolOptions;
 use tracing_subscriber::EnvFilter;
 
@@ -22,7 +27,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     };
 
-    let app = routes::router(AppState::new(db, node));
+    let mut state = AppState::new(db, node.clone());
+    // One persistent node subscription shared by every live client.
+    state.live = node.map(|n| LiveHub::spawn(LiveConfig::from_env(), n));
+    let app = routes::router(state);
     let listener = tokio::net::TcpListener::bind(config.listen_addr).await?;
     tracing::info!(addr = %config.listen_addr, "listening");
     axum::serve(listener, app)

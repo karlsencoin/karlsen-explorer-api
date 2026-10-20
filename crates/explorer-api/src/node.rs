@@ -23,8 +23,8 @@ use proto::{
     GetBlocksRequestMessage, GetBlocksResponseMessage, GetCoinSupplyRequestMessage,
     GetCoinSupplyResponseMessage, GetCurrentBlockColorRequestMessage, GetInfoRequestMessage,
     GetInfoResponseMessage, GetMempoolEntriesRequestMessage, GetUtxosByAddressesRequestMessage,
-    KarlsendRequest, RpcBalancesByAddressesEntry, RpcBlock, RpcMempoolEntry,
-    RpcUtxosByAddressesEntry,
+    KarlsendRequest, NotifyBlockAddedRequestMessage, RpcBalancesByAddressesEntry, RpcBlock,
+    RpcMempoolEntry, RpcNotifyCommand, RpcUtxosByAddressesEntry,
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -262,6 +262,55 @@ impl NodeClient {
             Some(e) => Err(NodeError::Rpc(e.message)),
             None => Ok(r.entries),
         }
+    }
+
+    /// Opens a long-lived stream subscribed to `BlockAdded` notifications.
+    ///
+    /// Returns the request sender (keep it alive: dropping it ends the stream) and
+    /// the reply stream. The first reply is the subscription acknowledgement, which
+    /// is checked here; after that the stream yields `BlockAddedNotification`s.
+    pub async fn subscribe_block_added(
+        &self,
+    ) -> Result<
+        (
+            mpsc::Sender<KarlsendRequest>,
+            tonic::Streaming<proto::KarlsendResponse>,
+        ),
+        NodeError,
+    > {
+        let mut client = self.client.clone();
+        let (tx, rx) = mpsc::channel(4);
+        tx.send(KarlsendRequest {
+            id: 1,
+            payload: Some(Req::NotifyBlockAddedRequest(
+                NotifyBlockAddedRequestMessage {
+                    command: RpcNotifyCommand::NotifyStart as i32,
+                },
+            )),
+        })
+        .await
+        .map_err(|_| NodeError::NoReply)?;
+        let mut replies =
+            tokio::time::timeout(self.timeout, client.message_stream(ReceiverStream::new(rx)))
+                .await
+                .map_err(|_| NodeError::Timeout)??
+                .into_inner();
+        // The node may send a notification before the acknowledgement; both are
+        // fine, only an explicit error fails the subscription.
+        let first = tokio::time::timeout(self.timeout, replies.message())
+            .await
+            .map_err(|_| NodeError::Timeout)??
+            .ok_or(NodeError::NoReply)?;
+        match first.payload {
+            Some(Resp::NotifyBlockAddedResponse(r)) => {
+                if let Some(e) = r.error {
+                    return Err(NodeError::Rpc(e.message));
+                }
+            }
+            Some(Resp::BlockAddedNotification(_)) => {}
+            _ => return Err(NodeError::UnexpectedReply),
+        }
+        Ok((tx, replies))
     }
 
     /// `Some(true)` for blue, `Some(false)` for red, `None` when the node cannot tell

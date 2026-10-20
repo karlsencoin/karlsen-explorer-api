@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use sqlx::PgPool;
 
-use crate::{count_cache::CountCache, market::MarketFeed, node::NodeClient};
+use crate::{count_cache::CountCache, live::LiveHub, market::MarketFeed, node::NodeClient};
 
 #[derive(Clone)]
 pub struct AppState {
@@ -13,6 +13,8 @@ pub struct AppState {
     pub market: MarketFeed,
     /// Per-address transaction counts (see `count_cache`).
     pub tx_counts: Arc<CountCache>,
+    /// Live block feed (`/live/*`); `None` without a node or before it is started.
+    pub live: Option<Arc<LiveHub>>,
 }
 
 impl AppState {
@@ -23,6 +25,7 @@ impl AppState {
             node,
             market: MarketFeed::from_env(),
             tx_counts: Arc::new(CountCache::default()),
+            live: None,
         }
     }
 }
