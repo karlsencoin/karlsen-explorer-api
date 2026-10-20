@@ -734,3 +734,53 @@ async fn price_source_down_is_503_not_zero() {
         assert_eq!(r.json()["detail"], "Service temporarily unavailable");
     }
 }
+
+#[tokio::test]
+async fn utxos_paged_newest_first_with_totals() {
+    let mut node = address_node();
+    let base = node.utxos[0].clone();
+    // Three more UTXOs of A1 with distinct DAA scores and amounts.
+    for (i, daa) in [(1u32, 500u64), (2, 900), (3, 100)] {
+        let mut u = base.clone();
+        u.outpoint.as_mut().unwrap().index = i;
+        let e = u.utxo_entry.as_mut().unwrap();
+        e.block_daa_score = daa;
+        e.amount = 1_000 * u64::from(i);
+        node.utxos.push(u);
+    }
+    let base_amount = u128::from(base.utxo_entry.as_ref().unwrap().amount);
+    let base_daa = base.utxo_entry.as_ref().unwrap().block_daa_score;
+    let app = app_with_mock(node).await;
+
+    let r = request(&app, &format!("/addresses/{A1}/utxos?limit=2")).await;
+    assert_eq!(r.status, 200);
+    assert_eq!(r.headers["x-total-count"], "4");
+    assert_eq!(
+        r.headers["x-total-amount"],
+        (base_amount + 6_000).to_string().as_str()
+    );
+    let page: Vec<Value> = serde_json::from_slice(&r.body).unwrap();
+    assert_eq!(page.len(), 2);
+    let mut daas = [base_daa, 500, 900, 100];
+    daas.sort_unstable_by(|a, b| b.cmp(a));
+    assert_eq!(page[0]["utxoEntry"]["blockDaaScore"], daas[0].to_string());
+    assert_eq!(page[1]["utxoEntry"]["blockDaaScore"], daas[1].to_string());
+
+    let r = request(&app, &format!("/addresses/{A1}/utxos?limit=2&offset=3")).await;
+    let page: Vec<Value> = serde_json::from_slice(&r.body).unwrap();
+    assert_eq!(page.len(), 1);
+    assert_eq!(page[0]["utxoEntry"]["blockDaaScore"], daas[3].to_string());
+
+    assert_eq!(
+        request(&app, &format!("/addresses/{A1}/utxos?limit=0"))
+            .await
+            .status,
+        422
+    );
+    assert_eq!(
+        request(&app, &format!("/addresses/{A1}/utxos?limit=501"))
+            .await
+            .status,
+        422
+    );
+}

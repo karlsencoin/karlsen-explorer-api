@@ -15,5 +15,6 @@ pub mod pyfloat;
 pub mod routes;
 pub mod state;
 pub mod transactions;
+pub mod utxo_cache;
 
 pub use state::AppState;

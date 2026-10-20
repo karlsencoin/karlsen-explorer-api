@@ -81,7 +81,7 @@ legacy responses in `tests/fixtures/golden-*.json`.
 | `GET /info/health` | 200 only if the database answers, otherwise 503 |
 | `GET /blocks/{blockId}` | Node first, database fallback (`X-Data-Source: Database`); `includeTransactions`, `includeColor` |
 | `GET /addresses/{address}/balance` | karlsend UTXO index; invalid address → 422; node failure → 503 |
-| `GET /addresses/{address}/utxos` | karlsend UTXO index |
+| `GET /addresses/{address}/utxos` | karlsend UTXO index. New, optional: `limit` (1..500) and `offset` page the set newest first and add `X-Total-Count` / `X-Total-Amount` (sompi); the sorted set is cached 15 s per address. Without `limit`: the full list, as legacy |
 | `POST /addresses/balances` | `{"addresses": [...]}`, at most 1000 per request |
 | `POST /addresses/utxos` | `{"addresses": [...]}`, at most 1000 per request |
 | `GET /addresses/{address}/full-transactions` | `limit` 1..500, `offset`, `fields`, `resolve_previous_outpoints=no\|light\|full` |
