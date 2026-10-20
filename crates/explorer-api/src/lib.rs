@@ -12,6 +12,7 @@ pub mod market;
 pub mod miner;
 pub mod node;
 pub mod pyfloat;
+pub mod response_cache;
 pub mod routes;
 pub mod state;
 pub mod transactions;

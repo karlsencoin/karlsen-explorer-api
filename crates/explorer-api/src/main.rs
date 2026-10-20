@@ -31,6 +31,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // One persistent node subscription shared by every live client.
     state.live = node.map(|n| LiveHub::spawn(LiveConfig::from_env(), n));
     let app = routes::router(state);
+    // Keep the explorer's heaviest pages computed ahead of visitors.
+    let warm_every = std::env::var("ANALYTICS_WARM_S")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(120);
+    karlsen_explorer_api::response_cache::spawn_warmer(
+        app.clone(),
+        routes::WARM_ANALYTICS_PATHS
+            .iter()
+            .map(|p| p.to_string())
+            .collect(),
+        std::time::Duration::from_secs(warm_every),
+    );
     let listener = tokio::net::TcpListener::bind(config.listen_addr).await?;
     tracing::info!(addr = %config.listen_addr, "listening");
     axum::serve(listener, app)

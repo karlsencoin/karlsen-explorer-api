@@ -18,6 +18,43 @@ pub mod miners;
 pub mod peers;
 pub mod transactions;
 
+/// Whole-table aggregates over `balances`: slow to compute, slow to change, so
+/// they are served from `response_cache` (per-address history is not).
+fn cached_analytics(
+    cache: std::sync::Arc<crate::response_cache::ResponseCache>,
+) -> Router<AppState> {
+    Router::new()
+        .route("/analytics/addresses/top", get(analytics::top))
+        .route("/analytics/addresses/total", get(analytics::total))
+        .route(
+            "/analytics/addresses/distribution",
+            get(analytics::distribution),
+        )
+        .route("/analytics/addresses/range", get(analytics::range))
+        .route(
+            "/analytics/addresses/distribution-summary",
+            get(analytics::distribution_summary),
+        )
+        .route_layer(axum::middleware::from_fn_with_state(
+            cache,
+            crate::response_cache::cached,
+        ))
+}
+
+/// Paths the explorer opens most; `main` keeps them warm in `response_cache`.
+pub const WARM_ANALYTICS_PATHS: &[&str] = &[
+    "/analytics/addresses/distribution-summary",
+    "/analytics/addresses/top?limit=100&offset=0",
+    "/analytics/addresses/range?min_amount=10000000&max_amount=-1",
+    "/analytics/addresses/range?min_amount=1000000&max_amount=10000000",
+    "/analytics/addresses/range?min_amount=500000&max_amount=1000000",
+    "/analytics/addresses/range?min_amount=100000&max_amount=500000",
+    "/analytics/addresses/range?min_amount=10000&max_amount=100000",
+    "/analytics/addresses/range?min_amount=1000&max_amount=10000",
+    "/analytics/addresses/range?min_amount=100&max_amount=1000",
+    "/analytics/addresses/range?min_amount=1&max_amount=100",
+];
+
 pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/info/health", get(health::health))
@@ -45,17 +82,7 @@ pub fn router(state: AppState) -> Router {
         .route("/admin/seed-candidates", get(peers::seed_candidates))
         .route("/blocks", get(blocks::list_blocks))
         .route("/blocks/{block_id}", get(blocks::get_block))
-        .route("/analytics/addresses/top", get(analytics::top))
-        .route("/analytics/addresses/total", get(analytics::total))
-        .route(
-            "/analytics/addresses/distribution",
-            get(analytics::distribution),
-        )
-        .route("/analytics/addresses/range", get(analytics::range))
-        .route(
-            "/analytics/addresses/distribution-summary",
-            get(analytics::distribution_summary),
-        )
+        .merge(cached_analytics(state.analytics_cache.clone()))
         .route(
             "/analytics/addresses/{address}/history",
             get(analytics::history),

@@ -44,6 +44,17 @@ Behind nginx the stream needs `proxy_buffering off;` (the response also sends
 `X-Accel-Buffering: no`) and a `proxy_read_timeout` above the 15 s keep-alive.
 Amounts are sompi strings; the first output's address is derived from its script.
 
+## Analytics cache
+
+`/analytics/addresses/{top,total,distribution,range,distribution-summary}` aggregate the
+whole `balances` table; under database load one call can take tens of seconds. Their
+`200` responses are cached in memory per path + query for 10 minutes (single flight,
+at most 256 keys, errors never cached), and a background warmer recomputes the
+explorer's pages (`routes::WARM_ANALYTICS_PATHS`: summary, first rich-list page, the
+eight tier ranges) every `ANALYTICS_WARM_S` seconds (default `120`), so visitors are
+served from memory. Responses carry `X-Cache: HIT|MISS` and `Age`. The database is not
+modified.
+
 ## Data sources
 
 Like the Kaspa REST server, block lookups ask **karlsend** first (gRPC,

@@ -4,7 +4,7 @@ use sqlx::PgPool;
 
 use crate::{
     count_cache::CountCache, live::LiveHub, market::MarketFeed, node::NodeClient,
-    utxo_cache::UtxoCache,
+    response_cache::ResponseCache, utxo_cache::UtxoCache,
 };
 
 #[derive(Clone)]
@@ -20,6 +20,8 @@ pub struct AppState {
     pub live: Option<Arc<LiveHub>>,
     /// Sorted UTXO sets for the paged `/addresses/{address}/utxos`.
     pub utxo_cache: Arc<UtxoCache>,
+    /// Cached `/analytics/addresses/*` aggregate responses (see `response_cache`).
+    pub analytics_cache: Arc<ResponseCache>,
 }
 
 impl AppState {
@@ -32,6 +34,8 @@ impl AppState {
             tx_counts: Arc::new(CountCache::default()),
             live: None,
             utxo_cache: Arc::new(UtxoCache::default()),
+            // Kept long enough that a slow warm-up round never lets hot pages expire.
+            analytics_cache: ResponseCache::new(std::time::Duration::from_secs(600), 256),
         }
     }
 }
