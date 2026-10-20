@@ -14,8 +14,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .init();
 
     let config = Config::from_env()?;
+    let statement_timeout_ms = config.db_statement_timeout.as_millis();
     let db = PgPoolOptions::new()
         .max_connections(config.db_max_connections)
+        .after_connect(move |conn, _meta| {
+            Box::pin(async move {
+                sqlx::query(&format!("SET statement_timeout = {statement_timeout_ms}"))
+                    .execute(conn)
+                    .await?;
+                Ok(())
+            })
+        })
         .connect(&config.database_url)
         .await?;
 

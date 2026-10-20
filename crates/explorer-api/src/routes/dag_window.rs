@@ -108,6 +108,11 @@ pub async fn dag_window(
 
     // Ties on daa_score are broken by hash so repeated calls return the same list
     // (legacy left the order of equal scores to Postgres).
+    //
+    // Both orders must stay walkable from `idx_blocks_daa_score (daa_score DESC)`
+    // plus an incremental sort on hash. Do not add `NULLS LAST` here: it no longer
+    // matches the index, and Postgres falls back to sorting all ~18M blocks
+    // (110 s per call, which took the VPS down on 2026-10-19). See docs/INDEXES.md.
     let rows: Vec<Row> = match q.since_daa {
         Some(since) => {
             sqlx::query_as(
@@ -125,8 +130,8 @@ pub async fn dag_window(
             sqlx::query_as(
                 "SELECT hash, daa_score, blue_score, selected_parent_hash,
                         merge_set_blues_hashes, merge_set_reds_hashes
-                 FROM blocks
-                 ORDER BY daa_score DESC NULLS LAST, hash DESC LIMIT $1",
+                 FROM blocks WHERE daa_score IS NOT NULL
+                 ORDER BY daa_score DESC, hash DESC LIMIT $1",
             )
             .bind(limit)
             .fetch_all(&state.db)
