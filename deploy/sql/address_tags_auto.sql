@@ -12,8 +12,9 @@ SET client_min_messages = warning;
 --   2. the largest output carries at least 90 % of the input value,
 --   3. that output's address has never appeared before this transaction and
 --      carries no tag yet, and
---   4. the transaction also pays at least one other address (a whole balance
---      moved to one new address is a transfer between wallets, not change).
+--   4. the transaction also pays at least one other address and nothing goes
+--      back to the exchange's own tagged addresses (a whole balance moved to
+--      one new address, or a payment with change kept, is not a change hop).
 -- Customer withdrawals sent to a fresh address fail rule 2 unless they take
 -- nearly the whole hot wallet, which is what keeps false tags rare.
 --
@@ -115,6 +116,10 @@ BEGIN
                    sp.input_sompi,
                    (SELECT count(DISTINCT (o2).script_public_key_address)
                     FROM unnest(t.outputs) AS o2)  AS output_addresses,
+                   (SELECT bool_or(s2.address IS NOT NULL)
+                    FROM unnest(t.outputs) AS o3
+                    LEFT JOIN seed s2 ON s2.address = (o3).script_public_key_address
+                                     AND s2.exchange = sp.exchange) AS change_to_self,
                    (o).script_public_key_address AS address,
                    (o).amount                    AS amount
             FROM   spends sp
@@ -127,6 +132,7 @@ BEGIN
         FROM   change ch
         WHERE  ch.amount * 10 >= ch.input_sompi * 9                              -- rule 2
           AND  ch.output_addresses >= 2                                           -- rule 4
+          AND  NOT ch.change_to_self
           AND  NOT EXISTS (SELECT 1 FROM seed s        WHERE s.address = ch.address)
           AND  NOT EXISTS (SELECT 1 FROM manual_tags m WHERE m.address = ch.address)
           AND  NOT EXISTS (                                                       -- rule 3

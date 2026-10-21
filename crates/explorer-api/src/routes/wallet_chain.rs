@@ -11,9 +11,10 @@
 //!   2. the largest output goes to N and carries at least 90 % of the input
 //!      value, and
 //!   3. N has never appeared in any earlier transaction, and
-//!   4. the transaction also pays at least one other address. Moving a whole
-//!      balance to a single new address is a transfer between wallets (for
-//!      example funding a hot wallet), not change, and ends the chain.
+//!   4. the transaction also pays at least one other address, and nothing
+//!      returns to P. Moving a whole balance to a single new address, or
+//!      paying a new address with the change kept on P, is a transfer between
+//!      wallets (for example funding a hot wallet), not change.
 //! It is a heuristic: it is stated as "likely the same wallet" in the explorer.
 //!
 //! The chain is computed on request with a few indexed lookups per link and
@@ -145,6 +146,11 @@ fn change_target(view: &TxView, from: &str) -> Option<String> {
     let mut per_addr: HashMap<&str, i128> = HashMap::new();
     for (a, v) in &view.outputs {
         *per_addr.entry(a.as_str()).or_default() += *v as i128;
+    }
+    // Change that returns to the sender means the new address was paid, not
+    // given the change (e.g. a round 100,000 KLS funding with 14 KLS back).
+    if per_addr.contains_key(from) {
+        return None;
     }
     let pays_someone_else = per_addr.len() >= 2;
     let (best, amount) = per_addr.into_iter().max_by_key(|(_, v)| *v)?;
@@ -513,6 +519,9 @@ mod tests {
         assert_eq!(change_target(&v, "p"), None);
         // Sweeping the whole balance to one new address is a wallet transfer.
         let v = view(&[("p", 1000)], &[("n", 999)]);
+        assert_eq!(change_target(&v, "p"), None);
+        // Paying a new address while the change stays on the sender.
+        let v = view(&[("p", 1000)], &[("n", 985), ("p", 14)]);
         assert_eq!(change_target(&v, "p"), None);
         // Change back to the same address is not a hop.
         let v = view(&[("p", 1000)], &[("p", 990), ("w", 9)]);
