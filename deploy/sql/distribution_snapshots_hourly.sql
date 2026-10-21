@@ -15,6 +15,15 @@ CREATE TABLE IF NOT EXISTS distribution_snapshots_hourly (
     PRIMARY KEY (taken_at, tier)
 );
 
+-- The API connects as the read-only role; without this the endpoint fails
+-- with "permission denied" after the table is first created.
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'explorer_ro') THEN
+        GRANT SELECT ON distribution_snapshots_hourly TO explorer_ro;
+    END IF;
+END $$;
+
 BEGIN;
 
 INSERT INTO distribution_snapshots_hourly (taken_at, tier, address_count, tier_sompi)
