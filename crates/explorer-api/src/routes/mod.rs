@@ -17,6 +17,7 @@ pub mod live;
 pub mod miners;
 pub mod peers;
 pub mod transactions;
+pub mod wallet_chain;
 
 /// Whole-table aggregates over `balances`: slow to compute, slow to change, so
 /// they are served from `response_cache` (per-address history is not).
@@ -102,6 +103,14 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/addresses/{address}/transactions-count",
             get(address_transactions::transactions_count),
+        )
+        .route(
+            "/addresses/{address}/wallet-chain",
+            get(wallet_chain::wallet_chain),
+        )
+        .route(
+            "/addresses/{address}/wallet-history",
+            get(wallet_chain::wallet_history),
         )
         .route("/transactions/search", post(transactions::search))
         .route(
