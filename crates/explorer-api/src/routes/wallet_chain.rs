@@ -395,7 +395,10 @@ WITH newest AS (
                SELECT a.transaction_id, a.block_time
                FROM   addresses_transactions a
                WHERE  a.address = m.address
-               ORDER  BY a.block_time DESC NULLS LAST
+               -- Must match idx_at_address_block_time (address, block_time
+               -- DESC), whose DESC means NULLS FIRST; NULLS LAST would sort all
+               -- 15 M rows of a pool address.
+               ORDER  BY a.block_time DESC
                LIMIT  $2 + $3
            ) AS x
 ),
