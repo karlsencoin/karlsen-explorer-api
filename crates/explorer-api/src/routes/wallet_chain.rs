@@ -10,7 +10,10 @@
 //!   1. every input of the transaction spends an output of P,
 //!   2. the largest output goes to N and carries at least 90 % of the input
 //!      value, and
-//!   3. N has never appeared in any earlier transaction.
+//!   3. N has never appeared in any earlier transaction, and
+//!   4. the transaction also pays at least one other address. Moving a whole
+//!      balance to a single new address is a transfer between wallets (for
+//!      example funding a hot wallet), not change, and ends the chain.
 //! It is a heuristic: it is stated as "likely the same wallet" in the explorer.
 //!
 //! The chain is computed on request with a few indexed lookups per link and
@@ -143,8 +146,9 @@ fn change_target(view: &TxView, from: &str) -> Option<String> {
     for (a, v) in &view.outputs {
         *per_addr.entry(a.as_str()).or_default() += *v as i128;
     }
+    let pays_someone_else = per_addr.len() >= 2;
     let (best, amount) = per_addr.into_iter().max_by_key(|(_, v)| *v)?;
-    (best != from && amount * 10 >= total_in * 9).then(|| best.to_string())
+    (pays_someone_else && best != from && amount * 10 >= total_in * 9).then(|| best.to_string())
 }
 
 async fn seen_before(db: &PgPool, address: &str, block_time: i64) -> Result<bool, ApiError> {
@@ -506,6 +510,9 @@ mod tests {
         assert_eq!(change_target(&v, "p"), None);
         // Mixed sources.
         let v = view(&[("p", 500), ("q", 500)], &[("n", 999)]);
+        assert_eq!(change_target(&v, "p"), None);
+        // Sweeping the whole balance to one new address is a wallet transfer.
+        let v = view(&[("p", 1000)], &[("n", 999)]);
         assert_eq!(change_target(&v, "p"), None);
         // Change back to the same address is not a hop.
         let v = view(&[("p", 1000)], &[("p", 990), ("w", 9)]);
