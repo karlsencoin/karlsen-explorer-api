@@ -396,6 +396,51 @@ async fn snapshot(db: &sqlx::PgPool, days: i32) -> Result<Option<Snapshot>, ApiE
     Ok(Some(s))
 }
 
+/// The hourly snapshot taken closest to (but not after) `hours` ago, if one
+/// exists within a 2-hour tolerance. This gives exact 24 h / 7 d windows; the
+/// daily table compares against yesterday 03:05 UTC, a 21-45 h window that
+/// inflated the "24h" deltas (e.g. ~1.5x the real daily emission).
+async fn hourly_snapshot(db: &sqlx::PgPool, hours: i32) -> Result<Option<Snapshot>, ApiError> {
+    let rows: Result<Vec<(String, i32, i64)>, sqlx::Error> = sqlx::query_as(
+        "SELECT tier::text, address_count, tier_sompi
+         FROM   distribution_snapshots_hourly
+         WHERE  taken_at = (
+                    SELECT max(taken_at) FROM distribution_snapshots_hourly
+                    WHERE  taken_at <= now() - make_interval(hours => $1)
+                      AND  taken_at >  now() - make_interval(hours => $1 + 2))",
+    )
+    .bind(hours)
+    .fetch_all(db)
+    .await;
+    // The table is created by the hourly snapshot job; until it exists
+    // (undefined_table, 42P01) the daily baseline is used instead.
+    let rows = match rows {
+        Ok(r) => r,
+        Err(sqlx::Error::Database(e)) if e.code().as_deref() == Some("42P01") => Vec::new(),
+        Err(e) => return Err(e.into()),
+    };
+    if rows.is_empty() {
+        return Ok(None);
+    }
+    let mut s = Snapshot {
+        counts: HashMap::new(),
+        sompi: HashMap::new(),
+    };
+    for (tier, count, sompi) in rows {
+        s.counts.insert(tier.clone(), count as i64);
+        s.sompi.insert(tier, Some(sompi));
+    }
+    Ok(Some(s))
+}
+
+/// Exact-window baseline from the hourly table, falling back to the daily one.
+async fn baseline(db: &sqlx::PgPool, days: i32) -> Result<Option<Snapshot>, ApiError> {
+    match hourly_snapshot(db, days * 24).await? {
+        Some(s) => Ok(Some(s)),
+        None => snapshot(db, days).await,
+    }
+}
+
 /// Sum, or `None` when any baseline value is missing.
 fn sum_or_none(snap: &Snapshot) -> Option<i64> {
     snap.sompi.values().copied().sum::<Option<i64>>()
@@ -416,8 +461,8 @@ pub async fn distribution_summary(
         .into_iter()
         .filter_map(|(t, n, s)| t.map(|t| (t, (n, s.unwrap_or(0)))))
         .collect();
-    let d1 = snapshot(&state.db, 1).await?;
-    let d7 = snapshot(&state.db, 7).await?;
+    let d1 = baseline(&state.db, 1).await?;
+    let d7 = baseline(&state.db, 7).await?;
 
     let per_tier: Vec<(&'static str, i64, i64)> = TIERS
         .iter()

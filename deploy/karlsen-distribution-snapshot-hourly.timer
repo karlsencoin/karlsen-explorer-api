@@ -1,0 +1,10 @@
+[Unit]
+Description=Hourly distribution tier snapshot for exact 24 h / 7 d deltas
+
+[Timer]
+# Off the hour, clear of the 10-minute balances sync and the 03:05 daily snapshot.
+OnCalendar=*-*-* *:17:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target
