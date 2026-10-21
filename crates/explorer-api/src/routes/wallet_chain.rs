@@ -385,10 +385,23 @@ pub struct WalletHistory {
 }
 
 const WALLET_HISTORY_SQL: &str = "
-WITH page AS (
+WITH newest AS (
+    -- Per address, only the newest (offset + limit) rows, read from the
+    -- (address, block_time) index. The page is always inside their union, so
+    -- a pool address with millions of transactions costs one index range scan.
+    SELECT m.address, x.transaction_id, x.block_time
+    FROM   unnest($1::text[]) AS m(address)
+    CROSS  JOIN LATERAL (
+               SELECT a.transaction_id, a.block_time
+               FROM   addresses_transactions a
+               WHERE  a.address = m.address
+               ORDER  BY a.block_time DESC NULLS LAST
+               LIMIT  $2 + $3
+           ) AS x
+),
+page AS (
     SELECT transaction_id, max(block_time) AS block_time
-    FROM   addresses_transactions
-    WHERE  address = ANY($1)
+    FROM   newest
     GROUP  BY transaction_id
     ORDER  BY max(block_time) DESC NULLS LAST, transaction_id
     LIMIT  $2 OFFSET $3
@@ -414,10 +427,11 @@ sent AS (
     GROUP  BY x.transaction_id
 ),
 touched AS (
-    SELECT a.transaction_id, array_agg(DISTINCT a.address::text) AS addrs
-    FROM   addresses_transactions a JOIN page p ON p.transaction_id = a.transaction_id
-    WHERE  a.address = ANY($1)
-    GROUP  BY a.transaction_id
+    -- Every chain address a page transaction touches is among that address's
+    -- newest rows already read above.
+    SELECT n.transaction_id, array_agg(DISTINCT n.address) AS addrs
+    FROM   newest n JOIN page p ON p.transaction_id = n.transaction_id
+    GROUP  BY n.transaction_id
 )
 SELECT encode(x.transaction_id, 'hex')               AS transaction_id,
        COALESCE(encode(x.hash, 'hex'), '')           AS hash,
