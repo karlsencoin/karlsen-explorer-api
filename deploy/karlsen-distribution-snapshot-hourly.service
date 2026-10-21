@@ -1,10 +1,11 @@
 [Unit]
-Description=Karlsen explorer: hourly distribution tier snapshot
+Description=Karlsen explorer: hourly distribution tier snapshot + exchange tag follow-up
 After=postgresql.service
 
 [Service]
 Type=oneshot
 User=postgres
 ExecStart=/usr/bin/psql -X -q -v ON_ERROR_STOP=1 -d karlsen -f /etc/karlsen/distribution_snapshots_hourly.sql
+ExecStart=/usr/bin/psql -X -q -v ON_ERROR_STOP=1 -d karlsen -v tags_file=/opt/karlsen/karlsen-explorer-v2/address-tags.json -f /etc/karlsen/address_tags_auto.sql
 Nice=10
 IOSchedulingClass=idle

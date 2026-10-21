@@ -35,6 +35,10 @@ fn cached_analytics(
             "/analytics/addresses/distribution-summary",
             get(analytics::distribution_summary),
         )
+        .route(
+            "/analytics/address-tags/auto",
+            get(analytics::auto_address_tags),
+        )
         .route_layer(axum::middleware::from_fn_with_state(
             cache,
             crate::response_cache::cached,

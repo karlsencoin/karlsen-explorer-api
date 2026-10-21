@@ -683,3 +683,31 @@ mod tests {
         .is_err());
     }
 }
+
+// ---- /address-tags/auto ----
+
+/// Exchange tags derived by deploy/sql/address_tags_auto.sql (the hot wallet's
+/// change chain), as `{"karlsen:<address>": "<label>"}`. The explorer merges
+/// them under its hand-written address-tags.json, which always wins.
+pub async fn auto_address_tags(
+    State(state): State<AppState>,
+) -> Result<(HeaderMap, Json<std::collections::BTreeMap<String, String>>), ApiError> {
+    let rows: Result<Vec<(String, String)>, sqlx::Error> =
+        sqlx::query_as("SELECT address, label FROM address_tags_auto")
+            .fetch_all(&state.db)
+            .await;
+    let rows = match rows {
+        Ok(r) => r,
+        // Table not created yet by the tagging job (undefined_table).
+        Err(sqlx::Error::Database(e)) if e.code().as_deref() == Some("42P01") => Vec::new(),
+        Err(e) => return Err(e.into()),
+    };
+    let map = rows
+        .into_iter()
+        .map(|(a, l)| {
+            let a = if a.starts_with("karlsen:") { a } else { format!("karlsen:{a}") };
+            (a, l)
+        })
+        .collect();
+    Ok((cache(300), Json(map)))
+}
