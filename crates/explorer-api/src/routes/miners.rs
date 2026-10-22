@@ -410,6 +410,9 @@ impl Network {
 struct Miner {
     address: Cell,
     blocks: Cell,
+    /// KLS paid to this address by accepted coinbases inside the tracker's
+    /// snapshot window. Falls back to the tracker's own (unaccepted-inclusive)
+    /// figure only while the accepted-payout cache warms up after a restart.
     window_kls: PyFloat,
     hashrate_hs: Cell,
     winrate: Cell,
@@ -507,6 +510,12 @@ fn top(conn: &Connection, limit: i64, recent_hours: i64) -> Result<String, ApiEr
         .collect();
     let sw = software_map(conn, &all_addrs);
     let day = crate::day_rewards::day_totals();
+    // The snapshot window ends at the snapshot instant; the minute holding
+    // `ts_ms` is included.
+    let window = crate::day_rewards::range_totals(
+        ts_ms - window_minutes.max(1) * 60 * 1000,
+        ts_ms + 60 * 1000,
+    );
 
     let recent_miners = recent_rows
         .iter()
@@ -530,7 +539,10 @@ fn top(conn: &Connection, limit: i64, recent_hours: i64) -> Result<String, ApiEr
             Miner {
                 address: get(m, "address").clone(),
                 blocks: get(m, "blocks_in_window").clone(),
-                window_kls: PyFloat(get(m, "window_sompi").kls()),
+                window_kls: match &window {
+                    Some(w) => PyFloat(w.get(addr).copied().unwrap_or(0) as f64 / SOMPI_PER_KLS),
+                    None => PyFloat(get(m, "window_sompi").kls()),
+                },
                 hashrate_hs: get(m, "hashrate_hs").clone(),
                 winrate: get(m, "winrate").clone(),
                 day_kls: day_kls(&day, addr),

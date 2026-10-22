@@ -68,9 +68,28 @@ pub fn day_totals() -> Option<HashMap<String, i64>> {
     Some(sum_since(&s.buckets, now_ms() - DAY_MS))
 }
 
+/// Per-address sompi from accepted coinbase outputs with `block_time` in
+/// `[from_ms, to_ms)` (minute granularity), or `None` until the first backfill
+/// has finished. Ranges older than 24 h are not covered by the cache.
+pub fn range_totals(from_ms: i64, to_ms: i64) -> Option<HashMap<String, i64>> {
+    let s = state().read().ok()?;
+    if !s.ready {
+        return None;
+    }
+    Some(sum_range(&s.buckets, from_ms, to_ms))
+}
+
 fn sum_since(buckets: &Buckets, since_ms: i64) -> HashMap<String, i64> {
+    sum_range(buckets, since_ms, i64::MAX)
+}
+
+fn sum_range(buckets: &Buckets, from_ms: i64, to_ms: i64) -> HashMap<String, i64> {
     let mut out: HashMap<String, i64> = HashMap::new();
-    for per_addr in buckets.range(floor_minute(since_ms)..).map(|(_, v)| v) {
+    let (lo, hi) = (floor_minute(from_ms), floor_minute(to_ms));
+    if lo >= hi {
+        return out;
+    }
+    for per_addr in buckets.range(lo..hi).map(|(_, v)| v) {
         for (addr, sompi) in per_addr {
             *out.entry(addr.clone()).or_default() += sompi;
         }
@@ -204,6 +223,17 @@ mod tests {
         assert_eq!(sums["a"], 3);
         assert_eq!(sums["b"], 3);
         assert_eq!(b.len(), 2);
+    }
+
+    #[test]
+    fn sum_range_is_half_open_on_minutes() {
+        let mut b = Buckets::new();
+        b.insert(0, bucket(&[("a", 1)]));
+        b.insert(MINUTE_MS, bucket(&[("a", 10)]));
+        b.insert(2 * MINUTE_MS, bucket(&[("a", 100)]));
+        assert_eq!(sum_range(&b, MINUTE_MS, 2 * MINUTE_MS)["a"], 10);
+        assert_eq!(sum_range(&b, 0, 2 * MINUTE_MS + 5)["a"], 11);
+        assert!(sum_range(&b, MINUTE_MS, MINUTE_MS).is_empty());
     }
 
     #[test]
