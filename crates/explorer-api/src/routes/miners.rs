@@ -2,7 +2,7 @@
 //! tracker. Ported from legacy `endpoints/get_miners.py`.
 //!
 //! The data lives in the tracker's SQLite file (`KGI_TRACKER_DB`, default
-//! `/opt/karlsen/kgi/kgi.db`), opened read-only per request; Postgres is not used.
+//! `/opt/karlsen/kgi-backend/data/kgi.db`), opened read-only per request; Postgres is not used.
 //! SQLite columns are dynamically typed, so values are passed through with their
 //! stored type (an INTEGER stays an integer, a REAL is spelled like Python's
 //! `repr`), exactly as legacy's `sqlite3` rows were.
@@ -38,7 +38,7 @@ fn db_path() -> &'static Path {
         std::env::var("KGI_TRACKER_DB")
             .ok()
             .filter(|s| !s.is_empty())
-            .unwrap_or_else(|| "/opt/karlsen/kgi/kgi.db".into())
+            .unwrap_or_else(|| "/opt/karlsen/kgi-backend/data/kgi.db".into())
             .into()
     })
 }
@@ -413,7 +413,8 @@ struct Miner {
     window_kls: PyFloat,
     hashrate_hs: Cell,
     winrate: Cell,
-    alltime_kls: PyFloat,
+    /// KLS this address earned in the last 24 hours (rolling, from the ledger).
+    day_kls: PyFloat,
     #[serde(flatten)]
     software: Option<Software>,
 }
@@ -424,7 +425,8 @@ struct RecentMiner {
     blocks_recent: Cell,
     recent_kls: PyFloat,
     last_block_ms: Cell,
-    alltime_kls: PyFloat,
+    /// KLS this address earned in the last 24 hours (rolling, from the ledger).
+    day_kls: PyFloat,
     #[serde(flatten)]
     software: Option<Software>,
 }
@@ -440,8 +442,29 @@ struct Top {
     miners: Vec<Miner>,
 }
 
-fn alltime_kls(at: &HashMap<String, AllTime>, addr: &str) -> PyFloat {
-    PyFloat(at.get(addr).map_or(0, |a| a.sompi) as f64 / SOMPI_PER_KLS)
+/// Rolling window behind `day_kls`: the leaderboard shows the daily reward
+/// distribution, so only the last 24 hours of the ledger are ever needed.
+const DAY_MS: i64 = 24 * 3600 * 1000;
+
+/// Per-address KLS earned in the last 24 hours, summed from `miner_blocks`.
+fn day_map(conn: &Connection) -> Result<HashMap<String, i64>, ApiError> {
+    let cutoff = now_ms() - DAY_MS;
+    let mut out = HashMap::new();
+    for r in query(
+        conn,
+        "SELECT address, COALESCE(SUM(amount_sompi), 0) AS s \
+         FROM miner_blocks WHERE timestamp_ms >= ? GROUP BY address",
+        &[Value::Integer(cutoff)],
+    )? {
+        if let Some(a) = get(&r, "address").text() {
+            out.insert(a.to_string(), get(&r, "s").as_i64().unwrap_or(0));
+        }
+    }
+    Ok(out)
+}
+
+fn day_kls(day: &HashMap<String, i64>, addr: &str) -> PyFloat {
+    PyFloat(day.get(addr).copied().unwrap_or(0) as f64 / SOMPI_PER_KLS)
 }
 
 fn top(conn: &Connection, limit: i64, recent_hours: i64) -> Result<String, ApiError> {
@@ -460,7 +483,7 @@ fn top(conn: &Connection, limit: i64, recent_hours: i64) -> Result<String, ApiEr
 
     let miners = query(
         conn,
-        "SELECT address, blocks_in_window, window_sompi, hashrate_hs, winrate, alltime_sompi \
+        "SELECT address, blocks_in_window, window_sompi, hashrate_hs, winrate \
          FROM miner_snapshot WHERE ts_ms = ? ORDER BY hashrate_hs DESC LIMIT ?",
         &[Value::Integer(ts_ms), Value::Integer(limit)],
     )?;
@@ -499,7 +522,7 @@ fn top(conn: &Connection, limit: i64, recent_hours: i64) -> Result<String, ApiEr
         .filter_map(|r| get(r, "address").text().map(str::to_string))
         .collect();
     let sw = software_map(conn, &all_addrs);
-    let at = alltime_map(conn, &all_addrs)?;
+    let day = day_map(conn)?;
 
     let recent_miners = recent_rows
         .iter()
@@ -509,7 +532,7 @@ fn top(conn: &Connection, limit: i64, recent_hours: i64) -> Result<String, ApiEr
                 blocks_recent: get(r, "n").clone(),
                 recent_kls: PyFloat(get(r, "sompi").kls()),
                 last_block_ms: get(r, "last_ms").clone(),
-                alltime_kls: alltime_kls(&at, &addr),
+                day_kls: day_kls(&day, &addr),
                 software: sw.get(&addr).cloned(),
                 address: addr,
             }
@@ -526,7 +549,7 @@ fn top(conn: &Connection, limit: i64, recent_hours: i64) -> Result<String, ApiEr
                 window_kls: PyFloat(get(m, "window_sompi").kls()),
                 hashrate_hs: get(m, "hashrate_hs").clone(),
                 winrate: get(m, "winrate").clone(),
-                alltime_kls: alltime_kls(&at, addr),
+                day_kls: day_kls(&day, addr),
                 software: sw.get(addr).cloned(),
             }
         })

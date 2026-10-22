@@ -61,18 +61,18 @@ fn settings() -> &'static Settings {
     S.get_or_init(|| Settings {
         nodes_file: env_or(
             "DISCOVERED_NODES_FILE",
-            "/opt/karlsen/kgi/discovered_nodes.json",
+            "/opt/karlsen/kgi-backend/data/discovered_nodes.json",
         )
         .into(),
         history_db: env_or("NODE_HISTORY_DB", "/etc/karlsen/peer_geo.db").into(),
-        geo_cache_file: env_or("GEO_CACHE_FILE", "/opt/karlsen/kgi/geo_cache.json").into(),
+        geo_cache_file: env_or("GEO_CACHE_FILE", "/opt/karlsen/kgi-backend/data/geo_cache.json").into(),
         seeder_history_file: env_or(
             "SEEDER_HISTORY_FILE",
-            "/opt/karlsen/kgi/seeder_history.json",
+            "/opt/karlsen/kgi-backend/data/seeder_history.json",
         )
         .into(),
         history_window_sec: env_int("NODE_HISTORY_WINDOW_SEC", 604_800),
-        enrich_db: env_or("ENRICH_HISTORY_DB", "/opt/karlsen/kgi/node_history.db").into(),
+        enrich_db: env_or("ENRICH_HISTORY_DB", "/opt/karlsen/kgi-backend/data/node_history.db").into(),
         inbound_gap_sec: env_int("KGI_INBOUND_GAP_SEC", 90 * 60),
         admin_token: std::env::var("KGI_ADMIN_TOKEN").unwrap_or_default(),
         seed_min_uptime_sec: env_int("KGI_SEED_MIN_UPTIME_SEC", 86_400),

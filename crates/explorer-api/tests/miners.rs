@@ -72,6 +72,12 @@ fn tracker_db() -> &'static PathBuf {
                 .unwrap();
             }
         }
+        // A POOL_A block older than 24 h: kept in the ledger, but outside day_kls.
+        c.execute(
+            "INSERT INTO miner_blocks VALUES (?1, 100000000, ?2)",
+            params![POOL_A, ts - 25 * 3600 * 1000],
+        )
+        .unwrap();
         c.execute_batch(&format!(
             "INSERT INTO miner_software VALUES ('{POOL_A}', 'acme (pool)', 'v3.3.0', 10, 5);
              INSERT INTO miner_software VALUES ('{POOL_A}', 'old-miner', 'v3.2.0', 5, 1);
@@ -132,11 +138,9 @@ async fn top_matches_legacy_shape() {
     assert_eq!(miners[0]["address"], POOL_A); // ordered by hashrate
     assert_eq!(miners[0]["software"], "acme (pool)");
     assert_eq!(miners[0]["others"], serde_json::json!(["old-miner"]));
-    // Roll-up + ledger, int converted to float before dividing (as Python does).
-    assert_eq!(
-        miners[0]["alltime_kls"].as_f64().unwrap(),
-        (9_007_199_254_740_993_000_i64 + 300_000_000) as f64 / 1e8
-    );
+    // Rolling 24 h only: the roll-up table and the 25 h old block are ignored.
+    assert_eq!(miners[0]["day_kls"].as_f64().unwrap(), 3.0);
+    assert!(miners[0].get("alltime_kls").is_none());
     assert_eq!(miners[1]["address"], SOLO);
     assert!(body.contains(r#""window_kls":2.0"#));
 
@@ -158,7 +162,7 @@ async fn top_matches_legacy_shape() {
             "blocks_recent",
             "recent_kls",
             "last_block_ms",
-            "alltime_kls"
+            "day_kls"
         ]
     );
 
