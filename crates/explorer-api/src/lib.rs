@@ -3,6 +3,7 @@
 
 pub mod address;
 pub mod config;
+pub mod day_rewards;
 pub mod count_cache;
 pub mod difficulty;
 pub mod emission;

@@ -36,6 +36,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     };
 
+    // Rolling 24 h accepted-coinbase payouts for the KGI leaderboard.
+    karlsen_explorer_api::day_rewards::spawn(db.clone(), std::time::Duration::from_secs(60));
+
     let mut state = AppState::new(db, node.clone());
     // One persistent node subscription shared by every live client.
     state.live = node.map(|n| LiveHub::spawn(LiveConfig::from_env(), n));

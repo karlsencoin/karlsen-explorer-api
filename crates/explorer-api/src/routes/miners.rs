@@ -413,8 +413,9 @@ struct Miner {
     window_kls: PyFloat,
     hashrate_hs: Cell,
     winrate: Cell,
-    /// KLS this address earned in the last 24 hours (rolling, from the ledger).
-    day_kls: PyFloat,
+    /// KLS paid to this address by accepted coinbases in the last 24 hours;
+    /// `null` until the rolling cache has warmed up after a restart.
+    day_kls: Option<PyFloat>,
     #[serde(flatten)]
     software: Option<Software>,
 }
@@ -425,8 +426,9 @@ struct RecentMiner {
     blocks_recent: Cell,
     recent_kls: PyFloat,
     last_block_ms: Cell,
-    /// KLS this address earned in the last 24 hours (rolling, from the ledger).
-    day_kls: PyFloat,
+    /// KLS paid to this address by accepted coinbases in the last 24 hours;
+    /// `null` until the rolling cache has warmed up after a restart.
+    day_kls: Option<PyFloat>,
     #[serde(flatten)]
     software: Option<Software>,
 }
@@ -442,29 +444,11 @@ struct Top {
     miners: Vec<Miner>,
 }
 
-/// Rolling window behind `day_kls`: the leaderboard shows the daily reward
-/// distribution, so only the last 24 hours of the ledger are ever needed.
-const DAY_MS: i64 = 24 * 3600 * 1000;
-
-/// Per-address KLS earned in the last 24 hours, summed from `miner_blocks`.
-fn day_map(conn: &Connection) -> Result<HashMap<String, i64>, ApiError> {
-    let cutoff = now_ms() - DAY_MS;
-    let mut out = HashMap::new();
-    for r in query(
-        conn,
-        "SELECT address, COALESCE(SUM(amount_sompi), 0) AS s \
-         FROM miner_blocks WHERE timestamp_ms >= ? GROUP BY address",
-        &[Value::Integer(cutoff)],
-    )? {
-        if let Some(a) = get(&r, "address").text() {
-            out.insert(a.to_string(), get(&r, "s").as_i64().unwrap_or(0));
-        }
-    }
-    Ok(out)
-}
-
-fn day_kls(day: &HashMap<String, i64>, addr: &str) -> PyFloat {
-    PyFloat(day.get(addr).copied().unwrap_or(0) as f64 / SOMPI_PER_KLS)
+/// `day_kls` for one address: accepted coinbase payouts over the last 24 h,
+/// from the Postgres-backed `day_rewards` cache. `null` while it warms up.
+fn day_kls(day: &Option<HashMap<String, i64>>, addr: &str) -> Option<PyFloat> {
+    day.as_ref()
+        .map(|d| PyFloat(d.get(addr).copied().unwrap_or(0) as f64 / SOMPI_PER_KLS))
 }
 
 fn top(conn: &Connection, limit: i64, recent_hours: i64) -> Result<String, ApiError> {
@@ -522,7 +506,7 @@ fn top(conn: &Connection, limit: i64, recent_hours: i64) -> Result<String, ApiEr
         .filter_map(|r| get(r, "address").text().map(str::to_string))
         .collect();
     let sw = software_map(conn, &all_addrs);
-    let day = day_map(conn)?;
+    let day = crate::day_rewards::day_totals();
 
     let recent_miners = recent_rows
         .iter()
