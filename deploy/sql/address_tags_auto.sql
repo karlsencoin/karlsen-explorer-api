@@ -10,7 +10,9 @@ SET client_min_messages = warning;
 -- A transaction moves an exchange tag to its change output only when ALL of:
 --   1. every input is resolved, at least one input carries a tag of the
 --      exchange and no input carries a tag of another exchange,
---   2. the largest output carries at least 90 % of the input value,
+--   2. the largest output carries at least 75 % of the input value (2026-10-22:
+--      NonKYC's change was 85 % after a 15.28M KLS withdrawal; the earlier
+--      90 % threshold missed it),
 --   3. that output's address has never appeared before this transaction and
 --      carries no tag yet, and
 --   4. the transaction also pays at least one other address and nothing goes
@@ -18,7 +20,7 @@ SET client_min_messages = warning;
 --      whole balance moved to one new address, or a payment with change kept,
 --      is not a change hop).
 -- Customer withdrawals sent to a fresh address fail rule 2 unless they take
--- nearly the whole hot wallet, which is what keeps false tags rare.
+-- more than a quarter of the hot wallet, which is what keeps false tags rare.
 --
 -- Untagged inputs of such a transaction are tagged too (kind 'co-input'):
 -- addresses spent together are controlled by the same keys. Exchanges spend
@@ -158,7 +160,7 @@ BEGIN
         )
         SELECT ch.*
         FROM   change ch
-        WHERE  ch.amount * 10 >= ch.input_sompi * 9                              -- rule 2
+        WHERE  ch.amount * 4 >= ch.input_sompi * 3                               -- rule 2
           AND  ch.output_addresses >= 2                                           -- rule 4
           AND  NOT ch.change_to_self
           AND  NOT EXISTS (SELECT 1 FROM seed s        WHERE s.address = ch.address)

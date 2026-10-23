@@ -200,7 +200,7 @@ async fn chain_and_merged_history() {
 ///
 ///   FQ -> Q   (500)  long-lived collection address, appears first
 ///   FH -> H0  (1000) hot wallet change address
-///   TXC: H0 + Q -> W (100) + H1 (1399, change)
+///   TXC: H0 + Q -> W (225) + H1 (1274, change: 85 %, as on mainnet)
 #[tokio::test]
 async fn co_input_keeps_the_chain() {
     let db = db_or_skip!();
@@ -220,7 +220,7 @@ async fn co_input_keeps_the_chain() {
             TXC,
             3_000,
             &[input(FH, 0), input(FQ, 0)],
-            &[output(0, 100, W), output(1, 1399, H1)],
+            &[output(0, 225, W), output(1, 1274, H1)],
         ),
         link(Q, FQ, 1_000),
         link(H0, FH, 2_000),
@@ -283,7 +283,7 @@ async fn co_input_keeps_the_chain() {
     assert_eq!(
         nets,
         vec![
-            (TXC.to_string(), -101),
+            (TXC.to_string(), -226),
             (FH.to_string(), 1000),
             (FQ.to_string(), 500)
         ]

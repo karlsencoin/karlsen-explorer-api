@@ -9,8 +9,9 @@
 //! A transaction links address P to address N ("N is P's change") when:
 //!   1. P is one of its inputs and every input is resolved; inputs from other
 //!      addresses are allowed (see below),
-//!   2. the largest output goes to N and carries at least 90 % of the input
-//!      value, and
+//!   2. the largest output goes to N and carries at least 75 % of the input
+//!      value (NonKYC's change was 85 % on 2026-10-22, after a 15 % withdrawal),
+//!      and
 //!   3. N has never appeared in any earlier transaction, and
 //!   4. the transaction also pays at least one other address, and nothing
 //!      returns to any of its input addresses. Moving a whole balance to a
@@ -185,7 +186,7 @@ fn change_target(view: &TxView, from: &str) -> Option<String> {
     let (best, amount) = per_addr
         .into_iter()
         .max_by(|a, b| a.1.cmp(&b.1).then(b.0.cmp(a.0)))?;
-    (pays_someone_else && amount * 10 >= total_in * 9).then(|| best.to_string())
+    (pays_someone_else && amount * 4 >= total_in * 3).then(|| best.to_string())
 }
 
 /// Input addresses of `view` other than `except` (sorted, deduplicated).
@@ -621,9 +622,15 @@ mod tests {
     }
 
     #[test]
-    fn change_needs_single_source_and_90_percent() {
+    fn change_needs_dominant_output() {
         let v = view(&[("p", 1000)], &[("w", 10), ("n", 989)]);
         assert_eq!(change_target(&v, "p").as_deref(), Some("n"));
+        // Mainnet 2026-10-22: 85 % change after a large withdrawal still counts.
+        let v = view(&[("p", 1000)], &[("w", 150), ("n", 849)]);
+        assert_eq!(change_target(&v, "p").as_deref(), Some("n"));
+        // Below 75 %: could be a customer withdrawal, no link.
+        let v = view(&[("p", 1000)], &[("w", 260), ("n", 739)]);
+        assert_eq!(change_target(&v, "p"), None);
         // Even split: no dominant output.
         let v = view(&[("p", 1000)], &[("x", 499), ("y", 500)]);
         assert_eq!(change_target(&v, "p"), None);
