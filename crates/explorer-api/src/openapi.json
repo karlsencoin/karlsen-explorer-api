@@ -1,0 +1,1210 @@
+{
+ "openapi": "3.0.3",
+ "info": {
+  "title": "Karlsen REST API",
+  "version": "0.1.0",
+  "description": "Public REST API of the Karlsen network (karlsen-explorer-api). Amounts are in sompi (1 KLS = 100,000,000 sompi) unless stated otherwise.\n\nSource: https://github.com/karlsencoin/karlsen-explorer-api"
+ },
+ "servers": [
+  {
+   "url": "/"
+  }
+ ],
+ "paths": {
+  "/info/blockdag": {
+   "get": {
+    "tags": [
+     "Karlsen network info"
+    ],
+    "summary": "Get BlockDAG info",
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {
+       "application/json": {}
+      }
+     }
+    },
+    "description": "Block count, DAA score, difficulty, tips, pruning point."
+   }
+  },
+  "/info/network": {
+   "get": {
+    "tags": [
+     "Karlsen network info"
+    ],
+    "summary": "Get network info",
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {
+       "application/json": {}
+      }
+     }
+    },
+    "description": "Alias of /info/blockdag."
+   }
+  },
+  "/info/hashrate": {
+   "get": {
+    "tags": [
+     "Karlsen network info"
+    ],
+    "summary": "Get network hashrate",
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {
+       "application/json": {}
+      }
+     }
+    },
+    "parameters": [
+     {
+      "name": "stringOnly",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "boolean",
+       "default": false
+      },
+      "description": "Return the bare value as plain text"
+     }
+    ]
+   }
+  },
+  "/info/coinsupply": {
+   "get": {
+    "tags": [
+     "Karlsen network info"
+    ],
+    "summary": "Get coin supply",
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {
+       "application/json": {}
+      }
+     }
+    },
+    "description": "Circulating and maximum supply in sompi."
+   }
+  },
+  "/info/coinsupply/circulating": {
+   "get": {
+    "tags": [
+     "Karlsen network info"
+    ],
+    "summary": "Get circulating supply",
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {
+       "text/plain": {}
+      }
+     }
+    },
+    "description": "Plain-text KLS amount.",
+    "parameters": [
+     {
+      "name": "in_billion",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "boolean",
+       "default": false
+      }
+     }
+    ]
+   }
+  },
+  "/info/coinsupply/total": {
+   "get": {
+    "tags": [
+     "Karlsen network info"
+    ],
+    "summary": "Get total supply",
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {
+       "text/plain": {}
+      }
+     }
+    },
+    "description": "Plain-text KLS amount.",
+    "parameters": [
+     {
+      "name": "in_billion",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "boolean",
+       "default": false
+      }
+     }
+    ]
+   }
+  },
+  "/info/blockreward": {
+   "get": {
+    "tags": [
+     "Karlsen network info"
+    ],
+    "summary": "Get current block reward",
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {
+       "application/json": {}
+      }
+     }
+    },
+    "parameters": [
+     {
+      "name": "stringOnly",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "boolean",
+       "default": false
+      },
+      "description": "Return the bare value as plain text"
+     }
+    ]
+   }
+  },
+  "/info/halving": {
+   "get": {
+    "tags": [
+     "Karlsen network info"
+    ],
+    "summary": "Get next reward reduction",
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {
+       "application/json": {}
+      }
+     }
+    },
+    "parameters": [
+     {
+      "name": "field",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string"
+      },
+      "description": "Return only this field"
+     }
+    ]
+   }
+  },
+  "/info/karlsend": {
+   "get": {
+    "tags": [
+     "Karlsen network info"
+    ],
+    "summary": "Get karlsend info",
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {
+       "application/json": {}
+      }
+     }
+    },
+    "description": "Node version, mempool size, sync state."
+   }
+  },
+  "/info/price": {
+   "get": {
+    "tags": [
+     "Karlsen network info"
+    ],
+    "summary": "Get KLS price (USD)",
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {
+       "application/json": {}
+      }
+     }
+    },
+    "parameters": [
+     {
+      "name": "stringOnly",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "boolean",
+       "default": false
+      },
+      "description": "Return the bare value as plain text"
+     }
+    ]
+   }
+  },
+  "/info/market-data": {
+   "get": {
+    "tags": [
+     "Karlsen network info"
+    ],
+    "summary": "Get market data",
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {
+       "application/json": {}
+      }
+     }
+    },
+    "description": "Price, volume and market cap."
+   }
+  },
+  "/info/mempool": {
+   "get": {
+    "tags": [
+     "Karlsen network info"
+    ],
+    "summary": "Get mempool summary",
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {
+       "application/json": {}
+      }
+     }
+    }
+   }
+  },
+  "/info/dag-window": {
+   "get": {
+    "tags": [
+     "Karlsen network info"
+    ],
+    "summary": "Get recent DAG window",
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {
+       "application/json": {}
+      }
+     }
+    },
+    "description": "Recent blocks with parents, for DAG visualisers.",
+    "parameters": [
+     {
+      "name": "limit",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "integer"
+      },
+      "description": "Page size"
+     },
+     {
+      "name": "since_daa",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "integer"
+      },
+      "description": "Only blocks after this DAA score"
+     }
+    ]
+   }
+  },
+  "/blocks/{block_id}": {
+   "get": {
+    "tags": [
+     "Karlsen blocks"
+    ],
+    "summary": "Get block",
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {
+       "application/json": {}
+      }
+     }
+    },
+    "parameters": [
+     {
+      "name": "block_id",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string"
+      },
+      "description": "Block hash"
+     },
+     {
+      "name": "includeTransactions",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "boolean",
+       "default": true
+      }
+     },
+     {
+      "name": "includeColor",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "boolean",
+       "default": false
+      }
+     }
+    ]
+   }
+  },
+  "/blocks": {
+   "get": {
+    "tags": [
+     "Karlsen blocks"
+    ],
+    "summary": "Get blocks from low hash",
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {
+       "application/json": {}
+      }
+     }
+    },
+    "parameters": [
+     {
+      "name": "lowHash",
+      "in": "query",
+      "required": true,
+      "schema": {
+       "type": "string"
+      }
+     },
+     {
+      "name": "includeBlocks",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "boolean",
+       "default": false
+      }
+     },
+     {
+      "name": "includeTransactions",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "boolean",
+       "default": false
+      }
+     }
+    ]
+   }
+  },
+  "/transactions/{transaction_id}": {
+   "get": {
+    "tags": [
+     "Karlsen transactions"
+    ],
+    "summary": "Get transaction",
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {
+       "application/json": {}
+      }
+     }
+    },
+    "parameters": [
+     {
+      "name": "transaction_id",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string"
+      }
+     },
+     {
+      "name": "inputs",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "boolean",
+       "default": true
+      }
+     },
+     {
+      "name": "outputs",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "boolean",
+       "default": true
+      }
+     },
+     {
+      "name": "resolve_previous_outpoints",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string",
+       "default": "no"
+      },
+      "description": "no | light | full"
+     },
+     {
+      "name": "blockHash",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string"
+      }
+     }
+    ]
+   }
+  },
+  "/transactions/search": {
+   "post": {
+    "tags": [
+     "Karlsen transactions"
+    ],
+    "summary": "Search transactions",
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {
+       "application/json": {}
+      }
+     }
+    },
+    "description": "POST only. Body holds transactionIds or an acceptingBlueScores range.",
+    "parameters": [
+     {
+      "name": "fields",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string"
+      },
+      "description": "Comma-separated field list"
+     },
+     {
+      "name": "resolve_previous_outpoints",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string",
+       "default": "no"
+      }
+     },
+     {
+      "name": "acceptance",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string"
+      },
+      "description": "accepted | rejected"
+     }
+    ],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "type": "object",
+        "properties": {
+         "transactionIds": {
+          "type": "array",
+          "items": {
+           "type": "string"
+          }
+         },
+         "acceptingBlueScores": {
+          "type": "object",
+          "properties": {
+           "gte": {
+            "type": "integer"
+           },
+           "lt": {
+            "type": "integer"
+           }
+          }
+         }
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/addresses/{address}/balance": {
+   "get": {
+    "tags": [
+     "Karlsen addresses"
+    ],
+    "summary": "Get balance from address",
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {
+       "application/json": {}
+      }
+     }
+    },
+    "parameters": [
+     {
+      "name": "address",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string"
+      },
+      "description": "Karlsen address, e.g. karlsen:qr…"
+     }
+    ]
+   }
+  },
+  "/addresses/balances": {
+   "post": {
+    "tags": [
+     "Karlsen addresses"
+    ],
+    "summary": "Get balances from addresses",
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {
+       "application/json": {}
+      }
+     }
+    },
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "type": "object",
+        "required": [
+         "addresses"
+        ],
+        "properties": {
+         "addresses": {
+          "type": "array",
+          "items": {
+           "type": "string"
+          }
+         }
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/addresses/{address}/utxos": {
+   "get": {
+    "tags": [
+     "Karlsen addresses"
+    ],
+    "summary": "Get UTXOs from address",
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {
+       "application/json": {}
+      }
+     }
+    },
+    "description": "Without limit: every UTXO. With limit (1-500): newest first, X-Total-Count and X-Total-Amount headers.",
+    "parameters": [
+     {
+      "name": "address",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string"
+      },
+      "description": "Karlsen address, e.g. karlsen:qr…"
+     },
+     {
+      "name": "limit",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "integer"
+      },
+      "description": "Page size"
+     },
+     {
+      "name": "offset",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "integer",
+       "default": 0
+      },
+      "description": "Rows to skip"
+     }
+    ]
+   }
+  },
+  "/addresses/utxos": {
+   "post": {
+    "tags": [
+     "Karlsen addresses"
+    ],
+    "summary": "Get UTXOs from addresses",
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {
+       "application/json": {}
+      }
+     }
+    },
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "type": "object",
+        "required": [
+         "addresses"
+        ],
+        "properties": {
+         "addresses": {
+          "type": "array",
+          "items": {
+           "type": "string"
+          }
+         }
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/addresses/{address}/full-transactions": {
+   "get": {
+    "tags": [
+     "Karlsen addresses"
+    ],
+    "summary": "Get full transactions from address",
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {
+       "application/json": {}
+      }
+     }
+    },
+    "description": "Newest first.",
+    "parameters": [
+     {
+      "name": "address",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string"
+      },
+      "description": "Karlsen address, e.g. karlsen:qr…"
+     },
+     {
+      "name": "limit",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "integer",
+       "default": 50
+      },
+      "description": "1-500"
+     },
+     {
+      "name": "offset",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "integer",
+       "default": 0
+      },
+      "description": "Rows to skip"
+     },
+     {
+      "name": "fields",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string"
+      }
+     },
+     {
+      "name": "resolve_previous_outpoints",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "string",
+       "default": "no"
+      }
+     }
+    ]
+   }
+  },
+  "/addresses/{address}/transactions-count": {
+   "get": {
+    "tags": [
+     "Karlsen addresses"
+    ],
+    "summary": "Get transaction count for address",
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {
+       "application/json": {}
+      }
+     }
+    },
+    "parameters": [
+     {
+      "name": "address",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string"
+      },
+      "description": "Karlsen address, e.g. karlsen:qr…"
+     }
+    ]
+   }
+  },
+  "/addresses/{address}/wallet-chain": {
+   "get": {
+    "tags": [
+     "Karlsen addresses"
+    ],
+    "summary": "Get wallet change chain",
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {
+       "application/json": {}
+      }
+     }
+    },
+    "description": "Addresses linked to this one by change outputs (heuristic).",
+    "parameters": [
+     {
+      "name": "address",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string"
+      },
+      "description": "Karlsen address, e.g. karlsen:qr…"
+     }
+    ]
+   }
+  },
+  "/addresses/{address}/wallet-history": {
+   "get": {
+    "tags": [
+     "Karlsen addresses"
+    ],
+    "summary": "Get wallet history across the change chain",
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {
+       "application/json": {}
+      }
+     }
+    },
+    "parameters": [
+     {
+      "name": "address",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string"
+      },
+      "description": "Karlsen address, e.g. karlsen:qr…"
+     },
+     {
+      "name": "limit",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "integer"
+      },
+      "description": "Page size"
+     },
+     {
+      "name": "offset",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "integer",
+       "default": 0
+      },
+      "description": "Rows to skip"
+     }
+    ]
+   }
+  },
+  "/analytics/addresses/distribution-summary": {
+   "get": {
+    "tags": [
+     "Karlsen analytics"
+    ],
+    "summary": "Get distribution summary",
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {
+       "application/json": {}
+      }
+     }
+    },
+    "description": "Holder tiers with 24 h / 7 d deltas."
+   }
+  },
+  "/analytics/addresses/top": {
+   "get": {
+    "tags": [
+     "Karlsen analytics"
+    ],
+    "summary": "Get rich list",
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {
+       "application/json": {}
+      }
+     }
+    },
+    "parameters": [
+     {
+      "name": "limit",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "integer"
+      },
+      "description": "Page size"
+     },
+     {
+      "name": "offset",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "integer",
+       "default": 0
+      },
+      "description": "Rows to skip"
+     }
+    ]
+   }
+  },
+  "/analytics/addresses/total": {
+   "get": {
+    "tags": [
+     "Karlsen analytics"
+    ],
+    "summary": "Get holder count",
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {
+       "application/json": {}
+      }
+     }
+    }
+   }
+  },
+  "/analytics/addresses/distribution": {
+   "get": {
+    "tags": [
+     "Karlsen analytics"
+    ],
+    "summary": "Get balance distribution",
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {
+       "application/json": {}
+      }
+     }
+    }
+   }
+  },
+  "/analytics/addresses/range": {
+   "get": {
+    "tags": [
+     "Karlsen analytics"
+    ],
+    "summary": "Get addresses in balance range",
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {
+       "application/json": {}
+      }
+     }
+    },
+    "description": "[min_amount, max_amount) in KLS; max_amount < 0 means no upper bound.",
+    "parameters": [
+     {
+      "name": "min_amount",
+      "in": "query",
+      "required": true,
+      "schema": {
+       "type": "number"
+      }
+     },
+     {
+      "name": "max_amount",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "number",
+       "default": -1
+      }
+     }
+    ]
+   }
+  },
+  "/analytics/address-tags/auto": {
+   "get": {
+    "tags": [
+     "Karlsen analytics"
+    ],
+    "summary": "Get automatic address tags",
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {
+       "application/json": {}
+      }
+     }
+    }
+   }
+  },
+  "/analytics/addresses/{address}/history": {
+   "get": {
+    "tags": [
+     "Karlsen analytics"
+    ],
+    "summary": "Get balance history for address",
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {
+       "application/json": {}
+      }
+     }
+    },
+    "parameters": [
+     {
+      "name": "address",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string"
+      },
+      "description": "Karlsen address, e.g. karlsen:qr…"
+     },
+     {
+      "name": "limit",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "integer"
+      },
+      "description": "Page size"
+     },
+     {
+      "name": "offset",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "integer",
+       "default": 0
+      },
+      "description": "Rows to skip"
+     }
+    ]
+   }
+  },
+  "/info/miners/top": {
+   "get": {
+    "tags": [
+     "Karlsen miners & nodes"
+    ],
+    "summary": "Get top miners",
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {
+       "application/json": {}
+      }
+     }
+    },
+    "parameters": [
+     {
+      "name": "limit",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "integer"
+      },
+      "description": "Page size"
+     },
+     {
+      "name": "recent_hours",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "integer"
+      }
+     }
+    ]
+   }
+  },
+  "/info/miners/network": {
+   "get": {
+    "tags": [
+     "Karlsen miners & nodes"
+    ],
+    "summary": "Get mining network summary",
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {
+       "application/json": {}
+      }
+     }
+    }
+   }
+  },
+  "/info/miners/address/{address}": {
+   "get": {
+    "tags": [
+     "Karlsen miners & nodes"
+    ],
+    "summary": "Get miner detail",
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {
+       "application/json": {}
+      }
+     }
+    },
+    "parameters": [
+     {
+      "name": "address",
+      "in": "path",
+      "required": true,
+      "schema": {
+       "type": "string"
+      },
+      "description": "Karlsen address, e.g. karlsen:qr…"
+     },
+     {
+      "name": "hours",
+      "in": "query",
+      "required": false,
+      "schema": {
+       "type": "integer"
+      }
+     }
+    ]
+   }
+  },
+  "/info/nodes": {
+   "get": {
+    "tags": [
+     "Karlsen miners & nodes"
+    ],
+    "summary": "Get known nodes",
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {
+       "application/json": {}
+      }
+     }
+    }
+   }
+  },
+  "/info/peers/geo": {
+   "get": {
+    "tags": [
+     "Karlsen miners & nodes"
+    ],
+    "summary": "Get node map (geo)",
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {
+       "application/json": {}
+      }
+     }
+    }
+   }
+  },
+  "/info/seeder-nodes": {
+   "get": {
+    "tags": [
+     "Karlsen miners & nodes"
+    ],
+    "summary": "Get DNS seeder nodes",
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {
+       "application/json": {}
+      }
+     }
+    }
+   }
+  },
+  "/live/recent": {
+   "get": {
+    "tags": [
+     "Live feed"
+    ],
+    "summary": "Get recent live blocks and transactions",
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {
+       "application/json": {}
+      }
+     }
+    }
+   }
+  },
+  "/live/stream": {
+   "get": {
+    "tags": [
+     "Live feed"
+    ],
+    "summary": "Live block and transaction stream (Server-Sent Events)",
+    "responses": {
+     "200": {
+      "description": "OK",
+      "content": {
+       "text/event-stream": {}
+      }
+     }
+    }
+   }
+  }
+ }
+}

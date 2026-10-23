@@ -11,6 +11,7 @@ pub mod addresses;
 pub mod analytics;
 pub mod blocks;
 pub mod dag_window;
+pub mod docs;
 pub mod health;
 pub mod info;
 pub mod live;
@@ -62,6 +63,9 @@ pub const WARM_ANALYTICS_PATHS: &[&str] = &[
 
 pub fn router(state: AppState) -> Router {
     Router::new()
+        .route("/", get(docs::root))
+        .route("/docs", get(docs::docs))
+        .route("/openapi.json", get(docs::openapi))
         .route("/info/health", get(health::health))
         .route("/live/stream", get(live::stream))
         .route("/live/recent", get(live::recent))
