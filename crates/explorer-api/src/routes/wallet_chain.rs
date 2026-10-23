@@ -465,6 +465,11 @@ pub struct WalletHistoryEntry {
     /// amount in this transaction (the new change address on a hop). Falls
     /// back to the largest sender when nothing came back to the wallet.
     main_address: Option<String>,
+    /// The other side of the transaction, outside the wallet: the largest
+    /// sender when money came in, the largest recipient when it went out.
+    counterparty_address: Option<String>,
+    /// How many distinct outside addresses are on that side.
+    counterparty_count: i64,
     received_sompi: i64,
     sent_sompi: i64,
     /// Net effect on the wallet as a whole: moves between its own addresses
@@ -548,6 +553,24 @@ main AS (
             SELECT transaction_id, address, v, 1 FROM sent_by) m
     ORDER  BY transaction_id, pref, v DESC, address
 ),
+ext_in AS (
+    -- Outside senders (resolved inputs not owned by the wallet)
+    SELECT x.transaction_id, (p).script_public_key_address AS address, sum((p).amount) AS v
+    FROM   txs x
+    CROSS  JOIN LATERAL unnest(x.inputs) AS i
+    JOIN   transactions pt ON pt.transaction_id = (i).previous_outpoint_hash
+    CROSS  JOIN LATERAL unnest(pt.outputs) AS p
+    WHERE  (p).index = (i).previous_outpoint_index
+      AND  NOT ((p).script_public_key_address = ANY($1))
+    GROUP  BY 1, 2
+),
+ext_out AS (
+    -- Outside recipients
+    SELECT x.transaction_id, (o).script_public_key_address AS address, sum((o).amount) AS v
+    FROM   txs x CROSS JOIN LATERAL unnest(x.outputs) AS o
+    WHERE  NOT ((o).script_public_key_address = ANY($1))
+    GROUP  BY 1, 2
+),
 touched AS (
     -- Every chain address a page transaction touches is among that address's
     -- newest rows already read above.
@@ -560,6 +583,8 @@ SELECT encode(x.transaction_id, 'hex')               AS transaction_id,
        COALESCE(x.block_time, 0)                     AS block_time,
        COALESCE(tc.addrs, '{}')                      AS addresses,
        mn.address                                    AS main_address,
+       cp.address                                    AS counterparty_address,
+       COALESCE(cp.n, 0)                             AS counterparty_count,
        COALESCE(r.v, 0)::bigint                      AS received_sompi,
        COALESCE(s.v, 0)::bigint                      AS sent_sompi,
        (COALESCE(r.v, 0) - COALESCE(s.v, 0))::bigint AS net_sompi
@@ -568,6 +593,19 @@ LEFT   JOIN received r ON r.transaction_id = x.transaction_id
 LEFT   JOIN sent     s ON s.transaction_id = x.transaction_id
 LEFT   JOIN touched tc ON tc.transaction_id = x.transaction_id
 LEFT   JOIN main     mn ON mn.transaction_id = x.transaction_id
+LEFT   JOIN LATERAL (
+           -- Money in: who sent it. Money out (or a hop): who received it.
+           SELECT e.address, count(*) OVER () AS n
+           FROM   (SELECT address, v FROM ext_in
+                   WHERE  transaction_id = x.transaction_id
+                     AND  COALESCE(r.v, 0) > COALESCE(s.v, 0)
+                   UNION ALL
+                   SELECT address, v FROM ext_out
+                   WHERE  transaction_id = x.transaction_id
+                     AND  COALESCE(r.v, 0) <= COALESCE(s.v, 0)) e
+           ORDER  BY e.v DESC, e.address
+           LIMIT  1
+       ) cp ON true
 ORDER  BY x.block_time DESC NULLS LAST, x.transaction_id";
 
 pub async fn wallet_history(
@@ -629,6 +667,9 @@ pub async fn wallet_history(
         }
         if let Some(m) = &mut t.main_address {
             *m = prefixed(m);
+        }
+        if let Some(c) = &mut t.counterparty_address {
+            *c = prefixed(c);
         }
     }
     Ok((

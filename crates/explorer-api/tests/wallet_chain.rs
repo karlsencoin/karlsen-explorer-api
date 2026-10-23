@@ -298,6 +298,16 @@ async fn co_input_keeps_the_chain() {
         .collect();
     let want = [H1, H0, Q].map(|a| format!("karlsen:{a}"));
     assert_eq!(mains, want);
+    // The other side: the withdrawal's payee on the hop; the funding inputs
+    // of the deposits are not indexed, so they have none.
+    let cps: Vec<(Option<&str>, i64)> = v["transactions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| (t["counterparty_address"].as_str(), t["counterparty_count"].as_i64().unwrap()))
+        .collect();
+    let w = format!("karlsen:{W}");
+    assert_eq!(cps, vec![(Some(w.as_str()), 1), (None, 0), (None, 0)]);
 
     // The payee stays outside the wallet.
     let (_, v) = get(&app, &format!("/addresses/karlsen:{W}/wallet-chain")).await;
