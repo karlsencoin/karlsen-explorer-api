@@ -8,15 +8,29 @@ SET client_min_messages = warning;
 -- the explorer shows them next to the hand-written tags.
 --
 -- A transaction moves an exchange tag to its change output only when ALL of:
---   1. every input belongs to tagged addresses of one and the same exchange,
+--   1. every input is resolved, at least one input carries a tag of the
+--      exchange and no input carries a tag of another exchange,
 --   2. the largest output carries at least 90 % of the input value,
 --   3. that output's address has never appeared before this transaction and
 --      carries no tag yet, and
 --   4. the transaction also pays at least one other address and nothing goes
---      back to the exchange's own tagged addresses (a whole balance moved to
---      one new address, or a payment with change kept, is not a change hop).
+--      back to an input address or to the exchange's own tagged addresses (a
+--      whole balance moved to one new address, or a payment with change kept,
+--      is not a change hop).
 -- Customer withdrawals sent to a fresh address fail rule 2 unless they take
 -- nearly the whole hot wallet, which is what keeps false tags rare.
+--
+-- Untagged inputs of such a transaction are tagged too (kind 'co-input'):
+-- addresses spent together are controlled by the same keys. Exchanges spend
+-- their deposit-collection address together with the hot wallet, and an
+-- untagged co-input used to stop the chain (2026-10-22: qptmu6 + qrunj7 ->
+-- qqzqv2q4). Co-inputs are only taken from transactions that pass all four
+-- rules, so a single wrong tag cannot spread through unrelated spends.
+--
+-- Derived tags carry the plain exchange name: every address is a derivation
+-- of the same wallet, so "(auto)" or "(old)" would only repeat what the
+-- balance column already shows. Provenance stays in parent_address,
+-- transaction_id and kind.
 --
 -- Run hourly by karlsen-distribution-snapshot-hourly.service:
 --   psql -v tags_file=/opt/karlsen/karlsen-explorer-v2/address-tags.json -f address_tags_auto.sql
@@ -37,6 +51,10 @@ CREATE TABLE IF NOT EXISTS address_tags_auto (
     transaction_id bytea       NOT NULL,      -- transaction that moved the tag
     tagged_at      timestamptz NOT NULL DEFAULT now()
 );
+ALTER TABLE address_tags_auto ADD COLUMN IF NOT EXISTS kind text NOT NULL DEFAULT 'change';
+-- Older runs labelled derived tags 'NonKYC (auto)'; use the plain name.
+UPDATE address_tags_auto SET label = regexp_replace(label, '\s*\(auto\)$', '')
+WHERE  label ~ '\(auto\)$';
 
 DO $$
 BEGIN
@@ -73,12 +91,15 @@ SELECT (extract(epoch FROM now() - make_interval(hours => :hours)) * 1000)::bigi
 DO $$
 DECLARE
     added int;
+    co_added int;
     rounds int := 0;
 BEGIN
     -- A chain can move several times inside one window; repeat until stable.
     LOOP
         rounds := rounds + 1;
 
+        DROP TABLE IF EXISTS hop;
+        CREATE TEMP TABLE hop AS
         WITH cand AS (
             SELECT DISTINCT at.transaction_id
             FROM   seed s
@@ -88,6 +109,7 @@ BEGIN
         ins AS (
             SELECT t.transaction_id,
                    t.block_time,
+                   cardinality(t.inputs)              AS n_inputs,
                    (prev_o).script_public_key_address AS address,
                    (prev_o).amount                    AS amount
             FROM   cand c
@@ -98,25 +120,32 @@ BEGIN
             WHERE  (prev_o).index = (inp).previous_outpoint_index
         ),
         spends AS (
-            -- Rule 1: all inputs resolved and owned by a single exchange.
+            -- Rule 1: all inputs resolved, tagged ones from a single exchange.
             SELECT i.transaction_id,
                    min(i.block_time)   AS block_time,
                    min(s.exchange)     AS exchange,
-                   min(i.address)      AS parent_address,
+                   -- parent: the largest tagged input
+                   (array_agg(i.address ORDER BY (s.address IS NULL), i.amount DESC))[1]
+                                       AS parent_address,
+                   array_agg(DISTINCT i.address) FILTER (WHERE s.address IS NULL)
+                                       AS untagged_inputs,
+                   array_agg(DISTINCT i.address) AS input_addresses,
                    sum(i.amount)       AS input_sompi
             FROM   ins i
             LEFT   JOIN seed s ON s.address = i.address
             GROUP  BY i.transaction_id
-            HAVING bool_and(s.address IS NOT NULL)
+            HAVING count(*) = min(i.n_inputs)
+               AND count(s.address) >= 1
                AND count(DISTINCT s.exchange) = 1
         ),
         change AS (
             SELECT DISTINCT ON (sp.transaction_id)
                    sp.transaction_id, sp.block_time, sp.exchange, sp.parent_address,
-                   sp.input_sompi,
+                   sp.untagged_inputs, sp.input_sompi,
                    (SELECT count(DISTINCT (o2).script_public_key_address)
                     FROM unnest(t.outputs) AS o2)  AS output_addresses,
-                   (SELECT bool_or(s2.address IS NOT NULL)
+                   (SELECT bool_or(s2.address IS NOT NULL
+                                   OR (o3).script_public_key_address = ANY(sp.input_addresses))
                     FROM unnest(t.outputs) AS o3
                     LEFT JOIN seed s2 ON s2.address = (o3).script_public_key_address
                                      AND s2.exchange = sp.exchange) AS change_to_self,
@@ -125,10 +154,9 @@ BEGIN
             FROM   spends sp
             JOIN   transactions t ON t.transaction_id = sp.transaction_id
             CROSS  JOIN LATERAL unnest(t.outputs) AS o
-            ORDER  BY sp.transaction_id, (o).amount DESC
+            ORDER  BY sp.transaction_id, (o).amount DESC, (o).script_public_key_address
         )
-        INSERT INTO address_tags_auto (address, label, parent_address, transaction_id)
-        SELECT ch.address, ch.exchange || ' (auto)', ch.parent_address, ch.transaction_id
+        SELECT ch.*
         FROM   change ch
         WHERE  ch.amount * 10 >= ch.input_sompi * 9                              -- rule 2
           AND  ch.output_addresses >= 2                                           -- rule 4
@@ -137,10 +165,24 @@ BEGIN
           AND  NOT EXISTS (SELECT 1 FROM manual_tags m WHERE m.address = ch.address)
           AND  NOT EXISTS (                                                       -- rule 3
                    SELECT 1 FROM addresses_transactions at
-                   WHERE  at.address = ch.address AND at.block_time < ch.block_time)
-        ON CONFLICT (address) DO NOTHING;
+                   WHERE  at.address = ch.address AND at.block_time < ch.block_time);
 
+        INSERT INTO address_tags_auto (address, label, parent_address, transaction_id, kind)
+        SELECT h.address, h.exchange, h.parent_address, h.transaction_id, 'change'
+        FROM   hop h
+        ON CONFLICT (address) DO NOTHING;
         GET DIAGNOSTICS added = ROW_COUNT;
+
+        -- Untagged co-inputs of the same transactions (common-input rule).
+        INSERT INTO address_tags_auto (address, label, parent_address, transaction_id, kind)
+        SELECT DISTINCT ON (u.address) u.address, h.exchange, h.parent_address, h.transaction_id, 'co-input'
+        FROM   hop h CROSS JOIN LATERAL unnest(h.untagged_inputs) AS u(address)
+        WHERE  NOT EXISTS (SELECT 1 FROM manual_tags m WHERE m.address = u.address)
+        ORDER  BY u.address, h.block_time
+        ON CONFLICT (address) DO NOTHING;
+        GET DIAGNOSTICS co_added = ROW_COUNT;
+        added := added + co_added;
+
         EXIT WHEN added = 0 OR rounds >= 20;
 
         INSERT INTO seed
@@ -150,4 +192,4 @@ BEGIN
     END LOOP;
 END $$;
 
-SELECT label, count(*) AS addresses FROM address_tags_auto GROUP BY label ORDER BY label;
+SELECT label, kind, count(*) AS addresses FROM address_tags_auto GROUP BY label, kind ORDER BY label, kind;

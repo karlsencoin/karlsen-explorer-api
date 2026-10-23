@@ -7,14 +7,25 @@
 //! rebuild that chain for any address and serve the merged history.
 //!
 //! A transaction links address P to address N ("N is P's change") when:
-//!   1. every input of the transaction spends an output of P,
+//!   1. P is one of its inputs and every input is resolved; inputs from other
+//!      addresses are allowed (see below),
 //!   2. the largest output goes to N and carries at least 90 % of the input
 //!      value, and
 //!   3. N has never appeared in any earlier transaction, and
 //!   4. the transaction also pays at least one other address, and nothing
-//!      returns to P. Moving a whole balance to a single new address, or
-//!      paying a new address with the change kept on P, is a transfer between
-//!      wallets (for example funding a hot wallet), not change.
+//!      returns to any of its input addresses. Moving a whole balance to a
+//!      single new address, or paying a new address with the change kept on
+//!      an input address, is a transfer between wallets (for example funding a
+//!      hot wallet), not change.
+//!
+//! Addresses spent together in one transaction are controlled by the same keys
+//! (common-input rule), so the other inputs of a linking transaction belong to
+//! the wallet too: exchanges spend their deposit-collection address together
+//! with the hot wallet. They are returned as `co_input_addresses` and included
+//! in the merged history. When walking back, the parent is the input address
+//! that appeared most recently, because the hot wallet's previous change
+//! address is younger than a long-lived collection address.
+//!
 //! It is a heuristic: it is stated as "likely the same wallet" in the explorer.
 //!
 //! The chain is computed on request with a few indexed lookups per link and
@@ -38,6 +49,8 @@ use sqlx::PgPool;
 use crate::{error::ApiError, routes::addresses::validate, AppState};
 
 const MAX_LINKS: usize = 100;
+/// Co-input addresses kept per chain (they are listed and merged into history).
+const MAX_CO_INPUTS: usize = 200;
 /// Transactions of an address inspected when looking for the spend that moved
 /// its balance on (newest first). Change addresses have one or two.
 const FORWARD_CANDIDATES: i64 = 20;
@@ -46,7 +59,10 @@ const CHAIN_CACHE_CAP: usize = 2_000;
 const PREFIX: &str = "karlsen:";
 
 fn stored(address: &str) -> String {
-    address.split_once(':').map_or(address, |(_, rest)| rest).to_string()
+    address
+        .split_once(':')
+        .map_or(address, |(_, rest)| rest)
+        .to_string()
 }
 
 fn prefixed(address: &str) -> String {
@@ -80,10 +96,21 @@ pub struct ChainLink {
     via_block_time: Option<i64>,
 }
 
+/// An address spent together with a chain address in a linking transaction.
+#[derive(Debug, Clone, Serialize)]
+pub struct CoInput {
+    address: String,
+    via_transaction_id: String,
+    via_block_time: i64,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct WalletChain {
     address: String,
     addresses: Vec<ChainLink>,
+    /// Other addresses of the same wallet found through the common-input
+    /// rule (not on the change chain itself).
+    co_input_addresses: Vec<CoInput>,
     /// The walk back stopped at the link limit, not at the wallet's start.
     earlier_truncated: bool,
     later_truncated: bool,
@@ -135,26 +162,53 @@ async fn tx_view(db: &PgPool, txid: &[u8]) -> Result<TxView, ApiError> {
     })
 }
 
-/// If every input is from `from` and the dominant output (rule 2) goes to an
-/// address other than `from`, returns that address.
+/// If `from` is one of the (fully resolved) inputs and the dominant output
+/// (rule 2) goes to an address that is not an input, returns that address.
 fn change_target(view: &TxView, from: &str) -> Option<String> {
     let inputs = view.inputs.as_ref()?;
-    if !inputs.iter().all(|(a, _)| a == from) {
+    if !inputs.iter().any(|(a, _)| a == from) {
         return None;
     }
+    let senders: HashSet<&str> = inputs.iter().map(|(a, _)| a.as_str()).collect();
     let total_in: i128 = inputs.iter().map(|(_, v)| *v as i128).sum();
     let mut per_addr: HashMap<&str, i128> = HashMap::new();
     for (a, v) in &view.outputs {
         *per_addr.entry(a.as_str()).or_default() += *v as i128;
     }
-    // Change that returns to the sender means the new address was paid, not
+    // Change that returns to a sender means the new address was paid, not
     // given the change (e.g. a round 100,000 KLS funding with 14 KLS back).
-    if per_addr.contains_key(from) {
+    if per_addr.keys().any(|a| senders.contains(a)) {
         return None;
     }
     let pays_someone_else = per_addr.len() >= 2;
-    let (best, amount) = per_addr.into_iter().max_by_key(|(_, v)| *v)?;
-    (pays_someone_else && best != from && amount * 10 >= total_in * 9).then(|| best.to_string())
+    // Ties broken by address so the result does not depend on hash order.
+    let (best, amount) = per_addr
+        .into_iter()
+        .max_by(|a, b| a.1.cmp(&b.1).then(b.0.cmp(a.0)))?;
+    (pays_someone_else && amount * 10 >= total_in * 9).then(|| best.to_string())
+}
+
+/// Input addresses of `view` other than `except` (sorted, deduplicated).
+fn other_inputs(view: &TxView, except: &str) -> Vec<String> {
+    let mut v: Vec<String> = view
+        .inputs
+        .iter()
+        .flatten()
+        .map(|(a, _)| a.clone())
+        .filter(|a| a != except)
+        .collect();
+    v.sort();
+    v.dedup();
+    v
+}
+
+async fn first_seen(db: &PgPool, address: &str) -> Result<i64, ApiError> {
+    let (t,): (Option<i64>,) =
+        sqlx::query_as("SELECT min(block_time) FROM addresses_transactions WHERE address = $1")
+            .bind(address)
+            .fetch_one(db)
+            .await?;
+    Ok(t.unwrap_or(i64::MIN))
 }
 
 async fn seen_before(db: &PgPool, address: &str, block_time: i64) -> Result<bool, ApiError> {
@@ -169,11 +223,12 @@ async fn seen_before(db: &PgPool, address: &str, block_time: i64) -> Result<bool
     Ok(seen)
 }
 
+/// One link of the walk: the next address, the other inputs of the linking
+/// transaction, the transaction and its block time.
+type Step = (String, Vec<String>, Vec<u8>, i64);
+
 /// The address whose change created `address`, with the linking transaction.
-async fn step_back(
-    db: &PgPool,
-    address: &str,
-) -> Result<Option<(String, Vec<u8>, i64)>, ApiError> {
+async fn step_back(db: &PgPool, address: &str) -> Result<Option<Step>, ApiError> {
     let first: Option<(Vec<u8>, Option<i64>)> = sqlx::query_as(
         "SELECT transaction_id, block_time FROM addresses_transactions
          WHERE  address = $1 AND block_time IS NOT NULL
@@ -189,21 +244,30 @@ async fn step_back(
     let Some(inputs) = view.inputs.as_ref() else {
         return Ok(None);
     };
-    let sources: HashSet<&str> = inputs.iter().map(|(a, _)| a.as_str()).collect();
-    if sources.len() != 1 {
+    let mut sources: Vec<String> = inputs.iter().map(|(a, _)| a.clone()).collect();
+    sources.sort();
+    sources.dedup();
+    // Rule 3 holds by construction: this is `address`'s first transaction.
+    if change_target(&view, &sources[0]).as_deref() != Some(address) {
         return Ok(None);
     }
-    let parent = sources.into_iter().next().unwrap().to_string();
-    // Rule 3 holds by construction: this is `address`'s first transaction.
-    Ok((change_target(&view, &parent).as_deref() == Some(address))
-        .then(|| (parent, txid, bt)))
+    // Parent: the input address that appeared most recently (the previous
+    // change address), not a long-lived address spent along with it.
+    let mut parent = sources[0].clone();
+    let mut parent_seen = i64::MIN;
+    for a in &sources {
+        let seen = first_seen(db, a).await?;
+        if seen > parent_seen {
+            parent_seen = seen;
+            parent = a.clone();
+        }
+    }
+    let co = other_inputs(&view, &parent);
+    Ok(Some((parent, co, txid, bt)))
 }
 
 /// The address `address`'s balance moved on to as change, with the transaction.
-async fn step_forward(
-    db: &PgPool,
-    address: &str,
-) -> Result<Option<(String, Vec<u8>, i64)>, ApiError> {
+async fn step_forward(db: &PgPool, address: &str) -> Result<Option<Step>, ApiError> {
     let recent: Vec<(Vec<u8>, Option<i64>)> = sqlx::query_as(
         "SELECT transaction_id, block_time FROM addresses_transactions
          WHERE  address = $1 AND block_time IS NOT NULL
@@ -219,7 +283,8 @@ async fn step_forward(
         let view = tx_view(db, &txid).await?;
         if let Some(next) = change_target(&view, address) {
             if !seen_before(db, &next, bt).await? {
-                return Ok(Some((next, txid, bt)));
+                let co = other_inputs(&view, address);
+                return Ok(Some((next, co, txid, bt)));
             }
         }
     }
@@ -235,13 +300,27 @@ async fn compute_chain(db: &PgPool, address: &str) -> Result<WalletChain, ApiErr
     let mut created_by: Option<(Vec<u8>, i64)> = None;
     let mut cur = start.clone();
     let mut earlier_truncated = false;
+    let mut co: Vec<CoInput> = Vec::new();
+    let mut co_seen: HashSet<String> = HashSet::new();
+    let mut add_co = |list: Vec<String>, txid: &[u8], bt: i64| {
+        for a in list {
+            if co.len() < MAX_CO_INPUTS && co_seen.insert(a.clone()) {
+                co.push(CoInput {
+                    address: a,
+                    via_transaction_id: hex::encode(txid),
+                    via_block_time: bt,
+                });
+            }
+        }
+    };
     loop {
         if earlier.len() >= MAX_LINKS {
             earlier_truncated = true;
             break;
         }
         match step_back(db, &cur).await? {
-            Some((parent, txid, bt)) if visited.insert(parent.clone()) => {
+            Some((parent, others, txid, bt)) if visited.insert(parent.clone()) => {
+                add_co(others, &txid, bt);
                 if earlier.is_empty() {
                     created_by = Some((txid, bt));
                 } else {
@@ -264,7 +343,8 @@ async fn compute_chain(db: &PgPool, address: &str) -> Result<WalletChain, ApiErr
             break;
         }
         match step_forward(db, &cur).await? {
-            Some((next, txid, bt)) if visited.insert(next.clone()) => {
+            Some((next, others, txid, bt)) if visited.insert(next.clone()) => {
+                add_co(others, &txid, bt);
                 later.push((next.clone(), txid, bt));
                 cur = next;
             }
@@ -303,9 +383,18 @@ async fn compute_chain(db: &PgPool, address: &str) -> Result<WalletChain, ApiErr
             via_block_time: Some(*bt),
         });
     }
+    // An address both on the chain and spent alongside it is listed once.
+    let mut co_input_addresses: Vec<CoInput> = co
+        .into_iter()
+        .filter(|c| !visited.contains(&c.address))
+        .collect();
+    for c in &mut co_input_addresses {
+        c.address = prefixed(&c.address);
+    }
     Ok(WalletChain {
         address: prefixed(&start),
         addresses,
+        co_input_addresses,
         earlier_truncated,
         later_truncated,
     })
@@ -325,9 +414,11 @@ async fn chain_for(db: &PgPool, address: &str) -> Result<Arc<WalletChain>, ApiEr
     let slot = {
         let mut map = slots().lock().unwrap();
         if map.len() >= CHAIN_CACHE_CAP && !map.contains_key(&key) {
-            map.retain(|_, s| s.try_lock().map_or(true, |g| {
-                g.as_ref().is_some_and(|(at, _)| at.elapsed() < CHAIN_TTL)
-            }));
+            map.retain(|_, s| {
+                s.try_lock().map_or(true, |g| {
+                    g.as_ref().is_some_and(|(at, _)| at.elapsed() < CHAIN_TTL)
+                })
+            });
             if map.len() >= CHAIN_CACHE_CAP {
                 map.clear();
             }
@@ -463,7 +554,12 @@ pub async fn wallet_history(
         ));
     }
     let chain = chain_for(&state.db, &address).await?;
-    let members: Vec<String> = chain.addresses.iter().map(|l| stored(&l.address)).collect();
+    let members: Vec<String> = chain
+        .addresses
+        .iter()
+        .map(|l| stored(&l.address))
+        .chain(chain.co_input_addresses.iter().map(|c| stored(&c.address)))
+        .collect();
 
     let total = if members.len() == 1 {
         // A lone address: reuse the per-address count cache.
@@ -531,8 +627,19 @@ mod tests {
         // Even split: no dominant output.
         let v = view(&[("p", 1000)], &[("x", 499), ("y", 500)]);
         assert_eq!(change_target(&v, "p"), None);
-        // Mixed sources.
+        // Mixed sources, single output: a transfer, not change.
         let v = view(&[("p", 500), ("q", 500)], &[("n", 999)]);
+        assert_eq!(change_target(&v, "p"), None);
+        // Hot wallet spent together with another address of the same wallet
+        // (common-input rule): the change hop still counts, from either input.
+        let v = view(&[("p", 1000), ("q", 4)], &[("w", 15), ("n", 988)]);
+        assert_eq!(change_target(&v, "p").as_deref(), Some("n"));
+        assert_eq!(change_target(&v, "q").as_deref(), Some("n"));
+        assert_eq!(other_inputs(&v, "p"), vec!["q".to_string()]);
+        // Not an input: no link.
+        assert_eq!(change_target(&v, "x"), None);
+        // Change back to the co-input address is not a hop.
+        let v = view(&[("p", 1000), ("q", 4)], &[("q", 990), ("w", 13)]);
         assert_eq!(change_target(&v, "p"), None);
         // Sweeping the whole balance to one new address is a wallet transfer.
         let v = view(&[("p", 1000)], &[("n", 999)]);
@@ -544,7 +651,10 @@ mod tests {
         let v = view(&[("p", 1000)], &[("p", 990), ("w", 9)]);
         assert_eq!(change_target(&v, "p"), None);
         // Unresolved inputs end the walk.
-        let v = TxView { inputs: None, outputs: vec![("n".into(), 1)] };
+        let v = TxView {
+            inputs: None,
+            outputs: vec![("n".into(), 1)],
+        };
         assert_eq!(change_target(&v, "p"), None);
     }
 
