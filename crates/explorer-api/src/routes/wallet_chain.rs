@@ -461,6 +461,10 @@ pub struct WalletHistoryEntry {
     block_time: i64,
     /// Chain addresses this transaction touches (prefixed).
     addresses: Vec<String>,
+    /// The wallet address the money went to: the one receiving the largest
+    /// amount in this transaction (the new change address on a hop). Falls
+    /// back to the largest sender when nothing came back to the wallet.
+    main_address: Option<String>,
     received_sompi: i64,
     sent_sompi: i64,
     /// Net effect on the wallet as a whole: moves between its own addresses
@@ -521,6 +525,29 @@ sent AS (
       AND  (p).script_public_key_address = ANY($1)
     GROUP  BY x.transaction_id
 ),
+received_by AS (
+    SELECT x.transaction_id, (o).script_public_key_address AS address, sum((o).amount) AS v
+    FROM   txs x CROSS JOIN LATERAL unnest(x.outputs) AS o
+    WHERE  (o).script_public_key_address = ANY($1)
+    GROUP  BY 1, 2
+),
+sent_by AS (
+    SELECT x.transaction_id, (p).script_public_key_address AS address, sum((p).amount) AS v
+    FROM   txs x
+    CROSS  JOIN LATERAL unnest(x.inputs) AS i
+    JOIN   transactions pt ON pt.transaction_id = (i).previous_outpoint_hash
+    CROSS  JOIN LATERAL unnest(pt.outputs) AS p
+    WHERE  (p).index = (i).previous_outpoint_index
+      AND  (p).script_public_key_address = ANY($1)
+    GROUP  BY 1, 2
+),
+main AS (
+    SELECT DISTINCT ON (transaction_id) transaction_id, address
+    FROM   (SELECT transaction_id, address, v, 0 AS pref FROM received_by
+            UNION ALL
+            SELECT transaction_id, address, v, 1 FROM sent_by) m
+    ORDER  BY transaction_id, pref, v DESC, address
+),
 touched AS (
     -- Every chain address a page transaction touches is among that address's
     -- newest rows already read above.
@@ -532,6 +559,7 @@ SELECT encode(x.transaction_id, 'hex')               AS transaction_id,
        COALESCE(encode(x.hash, 'hex'), '')           AS hash,
        COALESCE(x.block_time, 0)                     AS block_time,
        COALESCE(tc.addrs, '{}')                      AS addresses,
+       mn.address                                    AS main_address,
        COALESCE(r.v, 0)::bigint                      AS received_sompi,
        COALESCE(s.v, 0)::bigint                      AS sent_sompi,
        (COALESCE(r.v, 0) - COALESCE(s.v, 0))::bigint AS net_sompi
@@ -539,6 +567,7 @@ FROM   txs x
 LEFT   JOIN received r ON r.transaction_id = x.transaction_id
 LEFT   JOIN sent     s ON s.transaction_id = x.transaction_id
 LEFT   JOIN touched tc ON tc.transaction_id = x.transaction_id
+LEFT   JOIN main     mn ON mn.transaction_id = x.transaction_id
 ORDER  BY x.block_time DESC NULLS LAST, x.transaction_id";
 
 pub async fn wallet_history(
@@ -597,6 +626,9 @@ pub async fn wallet_history(
     for t in &mut transactions {
         for a in &mut t.addresses {
             *a = prefixed(a);
+        }
+        if let Some(m) = &mut t.main_address {
+            *m = prefixed(m);
         }
     }
     Ok((

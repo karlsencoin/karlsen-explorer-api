@@ -288,6 +288,16 @@ async fn co_input_keeps_the_chain() {
             (FQ.to_string(), 500)
         ]
     );
+    // The highlighted address is where the money went: the new change address
+    // on the hop, the receiver on a deposit.
+    let mains: Vec<&str> = v["transactions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["main_address"].as_str().unwrap())
+        .collect();
+    let want = [H1, H0, Q].map(|a| format!("karlsen:{a}"));
+    assert_eq!(mains, want);
 
     // The payee stays outside the wallet.
     let (_, v) = get(&app, &format!("/addresses/karlsen:{W}/wallet-chain")).await;
