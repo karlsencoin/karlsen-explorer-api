@@ -29,6 +29,9 @@
 //!
 //! It is a heuristic: it is stated as "likely the same wallet" in the explorer.
 //!
+//! The chain is always rebuilt from its newest address (forward to the head,
+//! then back from it), so every address of a wallet shows the same chain.
+//!
 //! The chain is computed on request with a few indexed lookups per link and
 //! kept in memory for `CHAIN_TTL`; nothing is written to the database. Walks
 //! stop after `MAX_LINKS` links in each direction and report truncation.
@@ -95,6 +98,10 @@ pub struct ChainLink {
     /// one (none for the oldest address found).
     via_transaction_id: Option<String>,
     via_block_time: Option<i64>,
+    /// Not a change address: spent together with the wallet in
+    /// `via_transaction_id` (shown when the requested address is a
+    /// collection address).
+    co_input: bool,
 }
 
 /// An address spent together with a chain address in a linking transaction.
@@ -292,50 +299,74 @@ async fn step_forward(db: &PgPool, address: &str) -> Result<Option<Step>, ApiErr
     Ok(None)
 }
 
-async fn compute_chain(db: &PgPool, address: &str) -> Result<WalletChain, ApiError> {
-    let start = stored(address);
-    let mut visited: HashSet<String> = HashSet::from([start.clone()]);
+/// One address of the chain, oldest first.
+struct Node {
+    address: String,
+    /// Transaction that moved the balance to this address (or, for a
+    /// co-input, the one where it was spent together with the wallet).
+    via: Option<(Vec<u8>, i64)>,
+    co_input: bool,
+}
 
-    // Walk back. Each element: (address, tx that created it from the older one).
-    let mut earlier: Vec<(String, Option<(Vec<u8>, i64)>)> = Vec::new();
-    let mut created_by: Option<(Vec<u8>, i64)> = None;
-    let mut cur = start.clone();
-    let mut earlier_truncated = false;
-    let mut co: Vec<CoInput> = Vec::new();
-    let mut co_seen: HashSet<String> = HashSet::new();
-    let mut add_co = |list: Vec<String>, txid: &[u8], bt: i64| {
-        for a in list {
-            if co.len() < MAX_CO_INPUTS && co_seen.insert(a.clone()) {
-                co.push(CoInput {
-                    address: a,
-                    via_transaction_id: hex::encode(txid),
-                    via_block_time: bt,
-                });
-            }
-        }
-    };
+/// Other inputs of a linking transaction, with that transaction.
+type CoHit = (String, Vec<u8>, i64);
+
+/// Walks back from `from` and returns the chain oldest first, ending with
+/// `from`, plus whether the walk hit the link limit.
+async fn walk_back(
+    db: &PgPool,
+    from: &str,
+    co: &mut Vec<CoHit>,
+) -> Result<(Vec<Node>, bool), ApiError> {
+    let mut visited: HashSet<String> = HashSet::from([from.to_string()]);
+    // Newest first while walking; reversed at the end.
+    let mut nodes = vec![Node {
+        address: from.to_string(),
+        via: None,
+        co_input: false,
+    }];
+    let mut truncated = false;
     loop {
-        if earlier.len() >= MAX_LINKS {
-            earlier_truncated = true;
+        if nodes.len() > MAX_LINKS {
+            truncated = true;
             break;
         }
+        let cur = nodes.last().unwrap().address.clone();
         match step_back(db, &cur).await? {
             Some((parent, others, txid, bt)) if visited.insert(parent.clone()) => {
-                add_co(others, &txid, bt);
-                if earlier.is_empty() {
-                    created_by = Some((txid, bt));
-                } else {
-                    earlier.last_mut().unwrap().1 = Some((txid, bt));
+                for a in others {
+                    co.push((a, txid.clone(), bt));
                 }
-                earlier.push((parent.clone(), None));
-                cur = parent;
+                nodes.last_mut().unwrap().via = Some((txid, bt));
+                nodes.push(Node {
+                    address: parent,
+                    via: None,
+                    co_input: false,
+                });
             }
             _ => break,
         }
     }
+    nodes.reverse();
+    Ok((nodes, truncated))
+}
 
-    // Walk forward.
+/// Builds the wallet chain seen from `address`.
+///
+/// The chain is always rebuilt from its newest address (walk forward to the
+/// head, then back from there), so every address of one wallet gets the same
+/// chain and the same merged history. Walking back from the requested address
+/// itself gave different answers per entry point: a long-lived collection
+/// address (only ever a co-input) has no change ancestry of its own, so its
+/// page missed the hot wallet's earlier addresses (2026-10-24: qqlahash showed
+/// 3 addresses, the hot wallet qzyvuzk3 showed 18).
+async fn compute_chain(db: &PgPool, address: &str) -> Result<WalletChain, ApiError> {
+    let start = stored(address);
+    let mut co: Vec<CoHit> = Vec::new();
+
+    // Walk forward from the requested address to the newest one.
     let mut later: Vec<(String, Vec<u8>, i64)> = Vec::new();
+    let mut seen: HashSet<String> = HashSet::from([start.clone()]);
     let mut cur = start.clone();
     let mut later_truncated = false;
     loop {
@@ -344,8 +375,10 @@ async fn compute_chain(db: &PgPool, address: &str) -> Result<WalletChain, ApiErr
             break;
         }
         match step_forward(db, &cur).await? {
-            Some((next, others, txid, bt)) if visited.insert(next.clone()) => {
-                add_co(others, &txid, bt);
+            Some((next, others, txid, bt)) if seen.insert(next.clone()) => {
+                for a in others {
+                    co.push((a, txid.clone(), bt));
+                }
                 later.push((next.clone(), txid, bt));
                 cur = next;
             }
@@ -353,44 +386,71 @@ async fn compute_chain(db: &PgPool, address: &str) -> Result<WalletChain, ApiErr
         }
     }
 
-    let hex_link = |l: &Option<(Vec<u8>, i64)>| {
-        (
-            l.as_ref().map(|(t, _)| hex::encode(t)),
-            l.as_ref().map(|(_, b)| *b),
-        )
-    };
-    let mut addresses = Vec::with_capacity(earlier.len() + 1 + later.len());
-    for (i, (a, link)) in earlier.iter().enumerate().rev() {
-        let (via, bt) = hex_link(link);
-        addresses.push(ChainLink {
-            address: prefixed(a),
-            position: -(i as i32) - 1,
-            via_transaction_id: via,
-            via_block_time: bt,
+    // Walk back from the head.
+    let (mut nodes, mut earlier_truncated) = walk_back(db, &cur, &mut co).await?;
+    if !nodes.iter().any(|n| n.address == start) {
+        let spliced = later.first().and_then(|(first, txid, bt)| {
+            nodes.iter().position(|n| &n.address == first).map(|j| (j, txid.clone(), *bt))
         });
+        match spliced {
+            // The requested address is not a change address of this wallet
+            // but was spent together with it (a collection address): list it
+            // just before the change address its spend created.
+            Some((j, txid, bt)) => nodes.insert(
+                j,
+                Node {
+                    address: start.clone(),
+                    via: Some((txid, bt)),
+                    co_input: true,
+                },
+            ),
+            // The walk from the head did not come back this far (link limit
+            // or a different parent): fall back to the requested address's
+            // own ancestry followed by the forward walk.
+            None => {
+                let mut co_back = Vec::new();
+                let (back, truncated) = walk_back(db, &start, &mut co_back).await?;
+                co.extend(co_back);
+                earlier_truncated = truncated;
+                nodes = back;
+                for (a, txid, bt) in &later {
+                    nodes.push(Node {
+                        address: a.clone(),
+                        via: Some((txid.clone(), *bt)),
+                        co_input: false,
+                    });
+                }
+            }
+        }
     }
-    let (via, bt) = hex_link(&created_by);
-    addresses.push(ChainLink {
-        address: prefixed(&start),
-        position: 0,
-        via_transaction_id: via,
-        via_block_time: bt,
-    });
-    for (i, (a, txid, bt)) in later.iter().enumerate() {
-        addresses.push(ChainLink {
-            address: prefixed(a),
-            position: i as i32 + 1,
-            via_transaction_id: Some(hex::encode(txid)),
-            via_block_time: Some(*bt),
-        });
-    }
-    // An address both on the chain and spent alongside it is listed once.
-    let mut co_input_addresses: Vec<CoInput> = co
-        .into_iter()
-        .filter(|c| !visited.contains(&c.address))
+
+    let at = nodes.iter().position(|n| n.address == start).unwrap_or(0) as i32;
+    let members: HashSet<&str> = nodes.iter().map(|n| n.address.as_str()).collect();
+    let addresses = nodes
+        .iter()
+        .enumerate()
+        .map(|(i, n)| ChainLink {
+            address: prefixed(&n.address),
+            position: i as i32 - at,
+            via_transaction_id: n.via.as_ref().map(|(t, _)| hex::encode(t)),
+            via_block_time: n.via.as_ref().map(|(_, b)| *b),
+            co_input: n.co_input,
+        })
         .collect();
-    for c in &mut co_input_addresses {
-        c.address = prefixed(&c.address);
+    // An address both on the chain and spent alongside it is listed once.
+    let mut co_seen: HashSet<String> = HashSet::new();
+    let mut co_input_addresses: Vec<CoInput> = Vec::new();
+    for (a, txid, bt) in co {
+        if co_input_addresses.len() >= MAX_CO_INPUTS {
+            break;
+        }
+        if !members.contains(a.as_str()) && co_seen.insert(a.clone()) {
+            co_input_addresses.push(CoInput {
+                address: prefixed(&a),
+                via_transaction_id: hex::encode(txid),
+                via_block_time: bt,
+            });
+        }
     }
     Ok(WalletChain {
         address: prefixed(&start),
@@ -477,11 +537,22 @@ pub struct WalletHistoryEntry {
     net_sompi: i64,
 }
 
+#[derive(Debug, Serialize, sqlx::FromRow)]
+pub struct FundedAddress {
+    address: String,
+    balance_sompi: i64,
+}
+
 #[derive(Debug, Serialize)]
 pub struct WalletHistory {
     address: String,
     chain_length: usize,
     total: i64,
+    /// What the whole wallet holds now: the sum over its addresses, from the
+    /// same `balances` table as the rich list (refreshed every 10 minutes).
+    balance_sompi: i64,
+    /// Wallet addresses with a balance, largest first.
+    funded_addresses: Vec<FundedAddress>,
     transactions: Vec<WalletHistoryEntry>,
 }
 
@@ -655,6 +726,24 @@ pub async fn wallet_history(
         n
     };
 
+    // The balances table may store addresses with or without the prefix.
+    let with_prefix: Vec<String> = members.iter().map(|a| prefixed(a)).collect();
+    let mut funded_addresses: Vec<FundedAddress> = sqlx::query_as(
+        "SELECT address::text AS address, amount AS balance_sompi
+         FROM   balances
+         WHERE  (address = ANY($1) OR address = ANY($2)) AND amount > 0
+         ORDER  BY amount DESC, address",
+    )
+    .bind(&members)
+    .bind(&with_prefix)
+    .fetch_all(&state.db)
+    .await?;
+    for f in &mut funded_addresses {
+        f.address = prefixed(&f.address);
+    }
+    funded_addresses.dedup_by(|a, b| a.address == b.address);
+    let balance_sompi = funded_addresses.iter().map(|f| f.balance_sompi).sum();
+
     let mut transactions: Vec<WalletHistoryEntry> = sqlx::query_as(WALLET_HISTORY_SQL)
         .bind(&members)
         .bind(limit)
@@ -678,6 +767,8 @@ pub async fn wallet_history(
             address: chain.address.clone(),
             chain_length: members.len(),
             total,
+            balance_sompi,
+            funded_addresses,
             transactions,
         }),
     ))
