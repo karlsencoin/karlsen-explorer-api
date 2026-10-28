@@ -29,6 +29,21 @@
 //!
 //! It is a heuristic: it is stated as "likely the same wallet" in the explorer.
 //!
+//! Certain and likely members
+//! --------------------------
+//! The change link (rules 1-4) is a guess: an exchange paying out a whole
+//! input with no change looks the same when one payee gets more than 75 %
+//! (2026-10-27, tx 1164ae4053: qqlahash's two deposits paid out in full, the
+//! larger output to qzsggnse). The common-input rule, by contrast, is proof of
+//! the same keys. So every address carries `confirmed`: true when it is joined
+//! to the requested address by common inputs alone (spent in one transaction
+//! with it, or with an address that is, and so on), false when at least one
+//! change guess is needed to reach it. The common inputs come from the linking
+//! transactions and from the newest `FORWARD_CANDIDATES` transactions of every
+//! member, so a change address becomes certain once the wallet spends it
+//! together with the rest. `wallet-history` reports the balance of the certain
+//! members separately (`confirmed_balance_sompi`).
+//!
 //! The chain is always rebuilt from its newest address (forward to the head,
 //! then back from it), so every address of a wallet shows the same chain.
 //!
@@ -102,6 +117,9 @@ pub struct ChainLink {
     /// `via_transaction_id` (shown when the requested address is a
     /// collection address).
     co_input: bool,
+    /// Joined to the requested address by common inputs alone (same keys,
+    /// certain); false when a change guess is needed to reach it.
+    confirmed: bool,
 }
 
 /// An address spent together with a chain address in a linking transaction.
@@ -110,6 +128,8 @@ pub struct CoInput {
     address: String,
     via_transaction_id: String,
     via_block_time: i64,
+    /// See `ChainLink::confirmed`.
+    confirmed: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -317,6 +337,7 @@ async fn walk_back(
     db: &PgPool,
     from: &str,
     co: &mut Vec<CoHit>,
+    groups: &mut Vec<Vec<String>>,
 ) -> Result<(Vec<Node>, bool), ApiError> {
     let mut visited: HashSet<String> = HashSet::from([from.to_string()]);
     // Newest first while walking; reversed at the end.
@@ -334,6 +355,7 @@ async fn walk_back(
         let cur = nodes.last().unwrap().address.clone();
         match step_back(db, &cur).await? {
             Some((parent, others, txid, bt)) if visited.insert(parent.clone()) => {
+                groups.push(input_group(&parent, &others));
                 for a in others {
                     co.push((a, txid.clone(), bt));
                 }
@@ -363,6 +385,8 @@ async fn walk_back(
 async fn compute_chain(db: &PgPool, address: &str) -> Result<WalletChain, ApiError> {
     let start = stored(address);
     let mut co: Vec<CoHit> = Vec::new();
+    // Input addresses of every linking transaction (common-input groups).
+    let mut groups: Vec<Vec<String>> = Vec::new();
 
     // Walk forward from the requested address to the newest one.
     let mut later: Vec<(String, Vec<u8>, i64)> = Vec::new();
@@ -376,6 +400,7 @@ async fn compute_chain(db: &PgPool, address: &str) -> Result<WalletChain, ApiErr
         }
         match step_forward(db, &cur).await? {
             Some((next, others, txid, bt)) if seen.insert(next.clone()) => {
+                groups.push(input_group(&cur, &others));
                 for a in others {
                     co.push((a, txid.clone(), bt));
                 }
@@ -387,10 +412,13 @@ async fn compute_chain(db: &PgPool, address: &str) -> Result<WalletChain, ApiErr
     }
 
     // Walk back from the head.
-    let (mut nodes, mut earlier_truncated) = walk_back(db, &cur, &mut co).await?;
+    let (mut nodes, mut earlier_truncated) = walk_back(db, &cur, &mut co, &mut groups).await?;
     if !nodes.iter().any(|n| n.address == start) {
         let spliced = later.first().and_then(|(first, txid, bt)| {
-            nodes.iter().position(|n| &n.address == first).map(|j| (j, txid.clone(), *bt))
+            nodes
+                .iter()
+                .position(|n| &n.address == first)
+                .map(|j| (j, txid.clone(), *bt))
         });
         match spliced {
             // The requested address is not a change address of this wallet
@@ -409,7 +437,7 @@ async fn compute_chain(db: &PgPool, address: &str) -> Result<WalletChain, ApiErr
             // own ancestry followed by the forward walk.
             None => {
                 let mut co_back = Vec::new();
-                let (back, truncated) = walk_back(db, &start, &mut co_back).await?;
+                let (back, truncated) = walk_back(db, &start, &mut co_back, &mut groups).await?;
                 co.extend(co_back);
                 earlier_truncated = truncated;
                 nodes = back;
@@ -426,6 +454,30 @@ async fn compute_chain(db: &PgPool, address: &str) -> Result<WalletChain, ApiErr
 
     let at = nodes.iter().position(|n| n.address == start).unwrap_or(0) as i32;
     let members: HashSet<&str> = nodes.iter().map(|n| n.address.as_str()).collect();
+    // An address both on the chain and spent alongside it is listed once.
+    let mut co_seen: HashSet<String> = HashSet::new();
+    let mut co_kept: Vec<CoHit> = Vec::new();
+    for (a, txid, bt) in co {
+        if co_kept.len() >= MAX_CO_INPUTS {
+            break;
+        }
+        if !members.contains(a.as_str()) && co_seen.insert(a.clone()) {
+            co_kept.push((a, txid, bt));
+        }
+    }
+
+    // Which members share keys with the requested address (common inputs only).
+    let all_members: Vec<String> = nodes
+        .iter()
+        .map(|n| n.address.clone())
+        .chain(co_kept.iter().map(|(a, _, _)| a.clone()))
+        .collect();
+    if all_members.len() > 1 {
+        groups.extend(spend_groups(db, &all_members).await?);
+    }
+    let same_keys = SameKeys::new(&groups);
+    let confirmed = |a: &str| same_keys.joined(a, &start);
+
     let addresses = nodes
         .iter()
         .enumerate()
@@ -435,23 +487,18 @@ async fn compute_chain(db: &PgPool, address: &str) -> Result<WalletChain, ApiErr
             via_transaction_id: n.via.as_ref().map(|(t, _)| hex::encode(t)),
             via_block_time: n.via.as_ref().map(|(_, b)| *b),
             co_input: n.co_input,
+            confirmed: confirmed(&n.address),
         })
         .collect();
-    // An address both on the chain and spent alongside it is listed once.
-    let mut co_seen: HashSet<String> = HashSet::new();
-    let mut co_input_addresses: Vec<CoInput> = Vec::new();
-    for (a, txid, bt) in co {
-        if co_input_addresses.len() >= MAX_CO_INPUTS {
-            break;
-        }
-        if !members.contains(a.as_str()) && co_seen.insert(a.clone()) {
-            co_input_addresses.push(CoInput {
-                address: prefixed(&a),
-                via_transaction_id: hex::encode(txid),
-                via_block_time: bt,
-            });
-        }
-    }
+    let co_input_addresses = co_kept
+        .into_iter()
+        .map(|(a, txid, bt)| CoInput {
+            confirmed: confirmed(&a),
+            address: prefixed(&a),
+            via_transaction_id: hex::encode(txid),
+            via_block_time: bt,
+        })
+        .collect();
     Ok(WalletChain {
         address: prefixed(&start),
         addresses,
@@ -459,6 +506,127 @@ async fn compute_chain(db: &PgPool, address: &str) -> Result<WalletChain, ApiErr
         earlier_truncated,
         later_truncated,
     })
+}
+
+/// Input addresses of a linking transaction: `spender` plus `others`.
+fn input_group(spender: &str, others: &[String]) -> Vec<String> {
+    let mut g = Vec::with_capacity(others.len() + 1);
+    g.push(spender.to_string());
+    g.extend(others.iter().cloned());
+    g
+}
+
+/// Common-input groups among the newest transactions of `members`: for each
+/// transaction with at least two distinct resolved input addresses, one of
+/// them a member, the distinct input addresses.
+async fn spend_groups(db: &PgPool, members: &[String]) -> Result<Vec<Vec<String>>, ApiError> {
+    let rows: Vec<(Vec<String>,)> = sqlx::query_as(
+        "WITH cand AS (
+             SELECT DISTINCT x.transaction_id
+             FROM   unnest($1::text[]) AS m(address)
+             CROSS  JOIN LATERAL (
+                        SELECT a.transaction_id
+                        FROM   addresses_transactions a
+                        WHERE  a.address = m.address
+                        -- idx_at_address_block_time (address, block_time DESC)
+                        ORDER  BY a.block_time DESC
+                        LIMIT  $2
+                    ) AS x
+         ),
+         ins AS (
+             SELECT c.transaction_id, (p).script_public_key_address AS address
+             FROM   cand c
+             JOIN   transactions t ON t.transaction_id = c.transaction_id
+             CROSS  JOIN LATERAL unnest(t.inputs) AS i
+             JOIN   transactions pt ON pt.transaction_id = (i).previous_outpoint_hash
+             CROSS  JOIN LATERAL unnest(pt.outputs) AS p
+             WHERE  (p).index = (i).previous_outpoint_index
+         )
+         SELECT array_agg(DISTINCT address ORDER BY address)
+         FROM   ins
+         WHERE  address IS NOT NULL
+         GROUP  BY transaction_id
+         HAVING count(DISTINCT address) >= 2 AND bool_or(address = ANY($1))",
+    )
+    .bind(members)
+    .bind(FORWARD_CANDIDATES)
+    .fetch_all(db)
+    .await?;
+    Ok(rows.into_iter().map(|(g,)| g).collect())
+}
+
+/// Addresses joined by the common-input rule (union-find over input groups).
+struct SameKeys {
+    parent: HashMap<String, String>,
+}
+
+impl SameKeys {
+    fn new(groups: &[Vec<String>]) -> Self {
+        let mut s = SameKeys {
+            parent: HashMap::new(),
+        };
+        for g in groups {
+            for pair in g.windows(2) {
+                s.union(&pair[0], &pair[1]);
+            }
+        }
+        s
+    }
+
+    fn find(&mut self, a: &str) -> String {
+        let mut root = a.to_string();
+        while let Some(p) = self.parent.get(&root) {
+            if *p == root {
+                break;
+            }
+            root = p.clone();
+        }
+        // Path compression.
+        let mut cur = a.to_string();
+        while cur != root {
+            let next = self
+                .parent
+                .get(&cur)
+                .cloned()
+                .unwrap_or_else(|| root.clone());
+            self.parent.insert(cur, root.clone());
+            cur = next;
+        }
+        root
+    }
+
+    fn union(&mut self, a: &str, b: &str) {
+        self.parent
+            .entry(a.to_string())
+            .or_insert_with(|| a.to_string());
+        self.parent
+            .entry(b.to_string())
+            .or_insert_with(|| b.to_string());
+        let (ra, rb) = (self.find(a), self.find(b));
+        if ra != rb {
+            // Deterministic root: the smaller address.
+            let (lo, hi) = if ra < rb { (ra, rb) } else { (rb, ra) };
+            self.parent.insert(hi, lo);
+        }
+    }
+
+    /// Same keys: the same address, or both in one common-input component.
+    fn joined(&self, a: &str, b: &str) -> bool {
+        if a == b {
+            return true;
+        }
+        let root = |x: &str| {
+            let mut r = x.to_string();
+            loop {
+                match self.parent.get(&r) {
+                    Some(p) if *p != r => r = p.clone(),
+                    Some(_) => return Some(r),
+                    None => return None,
+                }
+            }
+        };
+        matches!((root(a), root(b)), (Some(x), Some(y)) if x == y)
+    }
 }
 
 // ---- in-memory cache, single flight per address ----
@@ -541,6 +709,9 @@ pub struct WalletHistoryEntry {
 pub struct FundedAddress {
     address: String,
     balance_sompi: i64,
+    /// Certain member of the wallet (see `ChainLink::confirmed`).
+    #[sqlx(skip)]
+    confirmed: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -551,6 +722,9 @@ pub struct WalletHistory {
     /// What the whole wallet holds now: the sum over its addresses, from the
     /// same `balances` table as the rich list (refreshed every 10 minutes).
     balance_sompi: i64,
+    /// Part of `balance_sompi` held by certain members (joined to the
+    /// requested address by common inputs); the rest rests on a change guess.
+    confirmed_balance_sompi: i64,
     /// Wallet addresses with a balance, largest first.
     funded_addresses: Vec<FundedAddress>,
     transactions: Vec<WalletHistoryEntry>,
@@ -738,11 +912,30 @@ pub async fn wallet_history(
     .bind(&with_prefix)
     .fetch_all(&state.db)
     .await?;
+    let certain: HashSet<String> = chain
+        .addresses
+        .iter()
+        .filter(|l| l.confirmed)
+        .map(|l| l.address.clone())
+        .chain(
+            chain
+                .co_input_addresses
+                .iter()
+                .filter(|c| c.confirmed)
+                .map(|c| c.address.clone()),
+        )
+        .collect();
     for f in &mut funded_addresses {
         f.address = prefixed(&f.address);
+        f.confirmed = certain.contains(&f.address);
     }
     funded_addresses.dedup_by(|a, b| a.address == b.address);
     let balance_sompi = funded_addresses.iter().map(|f| f.balance_sompi).sum();
+    let confirmed_balance_sompi = funded_addresses
+        .iter()
+        .filter(|f| f.confirmed)
+        .map(|f| f.balance_sompi)
+        .sum();
 
     let mut transactions: Vec<WalletHistoryEntry> = sqlx::query_as(WALLET_HISTORY_SQL)
         .bind(&members)
@@ -768,6 +961,7 @@ pub async fn wallet_history(
             chain_length: members.len(),
             total,
             balance_sompi,
+            confirmed_balance_sompi,
             funded_addresses,
             transactions,
         }),
@@ -827,6 +1021,23 @@ mod tests {
             outputs: vec![("n".into(), 1)],
         };
         assert_eq!(change_target(&v, "p"), None);
+    }
+
+    #[test]
+    fn same_keys_only_through_common_inputs() {
+        let s = SameKeys::new(&[
+            vec!["h0".into(), "q".into()],
+            vec!["h1".into(), "q".into()],
+            vec!["x".into(), "y".into()],
+        ]);
+        assert!(s.joined("h0", "h1"));
+        assert!(s.joined("q", "h0"));
+        assert!(!s.joined("h0", "x"));
+        assert!(s.joined("x", "y"));
+        // Never spent with anything: only itself.
+        assert!(s.joined("h2", "h2"));
+        assert!(!s.joined("h2", "q"));
+        assert!(!s.joined("h2", "z"));
     }
 
     #[test]

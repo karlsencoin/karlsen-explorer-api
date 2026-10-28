@@ -10,6 +10,8 @@ pub struct TestDb {
     pub pool: PgPool,
     admin: PgPool,
     name: String,
+    /// Connection URL of the throw-away database (for psql-run scripts).
+    pub url: String,
 }
 
 /// Returns `None` only when `TEST_DATABASE_URL` is unset. Once a database is
@@ -30,9 +32,10 @@ pub async fn setup() -> Option<TestDb> {
         .await
         .expect("create test database");
     let base = url.rsplit_once('/').map(|x| x.0).unwrap_or(&url);
+    let db_url = format!("{base}/{name}");
     let pool = PgPoolOptions::new()
         .max_connections(4)
-        .connect(&format!("{base}/{name}"))
+        .connect(&db_url)
         .await
         .expect("connect to test database");
     // pg_dump 18 emits psql-only `\restrict` / `\unrestrict` lines, which the server
@@ -56,7 +59,12 @@ pub async fn setup() -> Option<TestDb> {
         .execute(&pool)
         .await
         .expect("seed-transactions");
-    Some(TestDb { pool, admin, name })
+    Some(TestDb {
+        pool,
+        admin,
+        name,
+        url: db_url,
+    })
 }
 
 fn rand_suffix() -> u128 {

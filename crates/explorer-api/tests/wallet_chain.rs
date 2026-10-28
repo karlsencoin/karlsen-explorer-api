@@ -304,7 +304,12 @@ async fn co_input_keeps_the_chain() {
         .as_array()
         .unwrap()
         .iter()
-        .map(|t| (t["counterparty_address"].as_str(), t["counterparty_count"].as_i64().unwrap()))
+        .map(|t| {
+            (
+                t["counterparty_address"].as_str(),
+                t["counterparty_count"].as_i64().unwrap(),
+            )
+        })
         .collect();
     let w = format!("karlsen:{W}");
     assert_eq!(cps, vec![(Some(w.as_str()), 1), (None, 0), (None, 0)]);
@@ -375,7 +380,11 @@ async fn every_wallet_address_sees_the_same_wallet() {
             .iter()
             .map(|l| {
                 (
-                    l["address"].as_str().unwrap().trim_start_matches("karlsen:").to_string(),
+                    l["address"]
+                        .as_str()
+                        .unwrap()
+                        .trim_start_matches("karlsen:")
+                        .to_string(),
                     l["position"].as_i64().unwrap(),
                     l["co_input"].as_bool().unwrap(),
                 )
@@ -406,7 +415,10 @@ async fn every_wallet_address_sees_the_same_wallet() {
         let names: Vec<&str> = c.iter().map(|x| x.0.as_str()).collect();
         assert_eq!(names, vec![H0, H1, H2], "from {addr}");
         assert_eq!(c[at].1, 0, "from {addr}");
-        assert_eq!(v["co_input_addresses"][0]["address"], format!("karlsen:{Q}"));
+        assert_eq!(
+            v["co_input_addresses"][0]["address"],
+            format!("karlsen:{Q}")
+        );
     }
 
     // Same members, same history and the same wallet balance from all of them.
@@ -441,6 +453,190 @@ async fn every_wallet_address_sees_the_same_wallet() {
     // Payees stay outside.
     let (_, v) = get(&app, &format!("/addresses/karlsen:{W2}/wallet-chain")).await;
     assert_eq!(v["addresses"].as_array().unwrap().len(), 1);
+
+    db.teardown().await;
+}
+
+/// Certain and likely members, as on mainnet 2026-10-27:
+///
+///   FQ  -> Q (1000, 100, 5,741,702 KLS, 5,095,763 KLS)  collection address
+///   FH  -> H0 (9000)                                     hot wallet
+///   TXA: H0 + Q -> W1 (500) + H1 (9499)        like e13cf464 (qq66t6du + qqlahash)
+///   TXC: Q + Q  -> X1 (1,179,212.69) + X2 (9,658,252.31)
+///                  like 1164ae4053: two deposits paid out in full, no change
+///   TXB: H1 + Q -> W2 (400) + H2 (9198)        like 143dd0f2 (qz6cu9av + qqlahash -> qpn02qtc)
+///
+/// H0, H1 and Q are spent together, so they share keys: certain. H2 and X2
+/// are only linked by the change guess and were never spent: likely.
+#[tokio::test]
+async fn certain_and_likely_members() {
+    use karlsen_explorer_api::address::{encode, Version, MAINNET_PREFIX};
+    let db = db_or_skip!();
+    let addr = |n: u8| {
+        encode(MAINNET_PREFIX, Version::PubKey, &[n; 32])
+            .trim_start_matches("karlsen:")
+            .to_string()
+    };
+    // Distinct from the other tests: chains are cached in-process by address.
+    let (q, h0, h1, h2, x1, x2, w1, w2) = (
+        addr(101),
+        addr(102),
+        addr(103),
+        addr(104),
+        addr(105),
+        addr(106),
+        addr(107),
+        addr(108),
+    );
+    const FQ: &str = "c0ffee0000000000000000000000000000000000000000000000000000000e01";
+    const FH: &str = "c0ffee0000000000000000000000000000000000000000000000000000000e02";
+    const TXA: &str = "c0ffee0000000000000000000000000000000000000000000000000000000e03";
+    const TXC: &str = "c0ffee0000000000000000000000000000000000000000000000000000000e04";
+    const TXB: &str = "c0ffee0000000000000000000000000000000000000000000000000000000e05";
+    let missing = "00000000000000000000000000000000000000000000000000000000000000ee";
+    let seed = [
+        tx(
+            FQ,
+            1_000,
+            &[input(missing, 0)],
+            &[
+                output(0, 1000, &q),
+                output(1, 100, &q),
+                output(2, 574_170_200_000_000, &q),
+                output(3, 509_576_300_000_000, &q),
+            ],
+        ),
+        tx(FH, 2_000, &[input(missing, 1)], &[output(0, 9000, &h0)]),
+        tx(
+            TXA,
+            3_000,
+            &[input(FH, 0), input(FQ, 0)],
+            &[output(0, 500, &w1), output(1, 9499, &h1)],
+        ),
+        tx(
+            TXC,
+            3_500,
+            &[input(FQ, 2), input(FQ, 3)],
+            &[
+                output(0, 117_921_269_319_520, &x1),
+                output(1, 965_825_230_660_480, &x2),
+            ],
+        ),
+        tx(
+            TXB,
+            4_000,
+            &[input(TXA, 1), input(FQ, 1)],
+            &[output(0, 400, &w2), output(1, 9198, &h2)],
+        ),
+        link(&q, FQ, 1_000),
+        link(&h0, FH, 2_000),
+        link(&h0, TXA, 3_000),
+        link(&q, TXA, 3_000),
+        link(&w1, TXA, 3_000),
+        link(&h1, TXA, 3_000),
+        link(&q, TXC, 3_500),
+        link(&x1, TXC, 3_500),
+        link(&x2, TXC, 3_500),
+        link(&h1, TXB, 4_000),
+        link(&q, TXB, 4_000),
+        link(&w2, TXB, 4_000),
+        link(&h2, TXB, 4_000),
+        format!(
+            "INSERT INTO balances (id, address, amount) VALUES
+             (9101, 'karlsen:{h2}', 9198), (9102, '{q}', 50), (9103, '{x2}', 965825230660480);"
+        ),
+    ]
+    .join("\n");
+    sqlx::raw_sql(&seed).execute(&db.pool).await.unwrap();
+    let app = db.app();
+
+    let flags = |v: &serde_json::Value| -> Vec<(String, bool)> {
+        v["addresses"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|l| {
+                (
+                    l["address"]
+                        .as_str()
+                        .unwrap()
+                        .trim_start_matches("karlsen:")
+                        .to_string(),
+                    l["confirmed"].as_bool().unwrap(),
+                )
+            })
+            .collect()
+    };
+
+    // From the collection address: the hot wallet's old addresses are certain,
+    // the unspent change address is only likely.
+    let (s, v) = get(&app, &format!("/addresses/karlsen:{q}/wallet-chain")).await;
+    assert_eq!(s, 200, "{v}");
+    assert_eq!(
+        flags(&v),
+        vec![
+            (h0.clone(), true),
+            (h1.clone(), true),
+            (q.clone(), true),
+            (h2.clone(), false),
+        ]
+    );
+    // The full payout is not on the wallet's chain.
+    assert!(!v.to_string().contains(&x2), "{v}");
+
+    // From an old hot wallet address: same verdicts.
+    let (_, v) = get(&app, &format!("/addresses/karlsen:{h1}/wallet-chain")).await;
+    assert_eq!(
+        flags(&v),
+        vec![(h0.clone(), true), (h1.clone(), true), (h2.clone(), false)]
+    );
+    assert_eq!(
+        v["co_input_addresses"][0]["address"],
+        format!("karlsen:{q}")
+    );
+    assert_eq!(v["co_input_addresses"][0]["confirmed"], true);
+
+    // From the unspent change address: nothing is proven yet.
+    let (_, v) = get(&app, &format!("/addresses/karlsen:{h2}/wallet-chain")).await;
+    assert_eq!(
+        flags(&v),
+        vec![(h0.clone(), false), (h1.clone(), false), (h2.clone(), true)]
+    );
+    assert_eq!(v["co_input_addresses"][0]["confirmed"], false);
+
+    // From the full payout's larger output (qzsggnse): linked to Q only by the
+    // change guess.
+    let (s, v) = get(&app, &format!("/addresses/karlsen:{x2}/wallet-chain")).await;
+    assert_eq!(s, 200, "{v}");
+    assert_eq!(flags(&v), vec![(q.clone(), false), (x2.clone(), true)]);
+
+    // Wallet balance: total, and the part held by certain members.
+    let (s, v) = get(
+        &app,
+        &format!("/addresses/karlsen:{q}/wallet-history?limit=10"),
+    )
+    .await;
+    assert_eq!(s, 200, "{v}");
+    assert_eq!(v["balance_sompi"], 9198 + 50);
+    assert_eq!(v["confirmed_balance_sompi"], 50);
+    let funded: Vec<(String, bool)> = v["funded_addresses"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|f| {
+            (
+                f["address"].as_str().unwrap().to_string(),
+                f["confirmed"].as_bool().unwrap(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        funded,
+        vec![
+            (format!("karlsen:{h2}"), false),
+            (format!("karlsen:{q}"), true)
+        ]
+    );
 
     db.teardown().await;
 }
