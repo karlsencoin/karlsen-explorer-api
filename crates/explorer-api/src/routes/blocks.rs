@@ -28,7 +28,7 @@ use crate::{
 const COINBASE_SUBNETWORK: &str = "0100000000000000000000000000000000000000";
 /// Upper bound on blocks visited when looking for the chain block that merged a
 /// block (database color lookup).
-const COLOR_SEARCH_LIMIT: usize = 64;
+const COLOR_SEARCH_LIMIT: usize = 256;
 
 #[derive(Debug, Deserialize)]
 pub struct BlockQuery {
@@ -339,6 +339,19 @@ pub async fn get_block(
                 let mut model = block_from_node(block, q.include_transactions);
                 if q.include_color {
                     model.extra.color = color_from_node(node, &model).await;
+                    // karlsend answers MergerNotFound when the merging chain block
+                    // is not a direct child (Kaspa only checks direct children), so
+                    // a merged block came back without a color. The database walk
+                    // searches deeper into the block's future.
+                    if model.extra.color.is_none() {
+                        model.extra.color = match color_from_db(&state.db, &block_id).await {
+                            Ok(c) => c,
+                            Err(e) => {
+                                tracing::warn!(error = %e, "block color database lookup failed");
+                                None
+                            }
+                        };
+                    }
                 }
                 return Ok((headers, Json(model)));
             }
