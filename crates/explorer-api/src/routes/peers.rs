@@ -39,6 +39,7 @@ struct Settings {
     inbound_gap_sec: i64,
     admin_token: String,
     seed_min_uptime_sec: i64,
+    peer_handle_key: Vec<u8>,
 }
 
 fn env_or(key: &str, default: &str) -> String {
@@ -76,7 +77,31 @@ fn settings() -> &'static Settings {
         inbound_gap_sec: env_int("KGI_INBOUND_GAP_SEC", 90 * 60),
         admin_token: std::env::var("KGI_ADMIN_TOKEN").unwrap_or_default(),
         seed_min_uptime_sec: env_int("KGI_SEED_MIN_UPTIME_SEC", 86_400),
+        peer_handle_key: peer_handle_key(),
     })
+}
+
+/// Secret mixed into peer handles. Without it a handle was sha256(ip): the
+/// masked IP already gives the first two octets, so trying the other 65,536
+/// addresses recovers the full IP in well under a second. KGI_PEER_HANDLE_KEY
+/// keeps handles stable across restarts; without it a random key is drawn at
+/// start (handles then change on restart, which nothing depends on).
+fn peer_handle_key() -> Vec<u8> {
+    if let Ok(k) = std::env::var("KGI_PEER_HANDLE_KEY") {
+        if !k.is_empty() {
+            return k.into_bytes();
+        }
+    }
+    let mut buf = vec![0u8; 32];
+    if let Ok(mut f) = std::fs::File::open("/dev/urandom") {
+        use std::io::Read;
+        if f.read_exact(&mut buf).is_ok() {
+            return buf;
+        }
+    }
+    // Last resort: process-specific, not reproducible from outside.
+    let seed = format!("{:?}{}", SystemTime::now(), std::process::id());
+    Sha256::digest(seed.as_bytes()).to_vec()
 }
 
 fn now_sec() -> f64 {
@@ -93,14 +118,26 @@ pub fn mask_ip(ip: &str) -> String {
     let parts: Vec<&str> = ip.split('.').collect();
     if parts.len() == 4 {
         format!("{}.{}.x.x", parts[0], parts[1])
+    } else if ip.contains(':') {
+        // IPv6 was returned unmasked; keep the first two groups like IPv4.
+        let groups: Vec<&str> = ip.split(':').filter(|g| !g.is_empty()).take(2).collect();
+        format!("{}:x:x", groups.join(":"))
     } else {
         ip.to_string()
     }
 }
 
-/// Stable anonymous id: `peer-` + first 8 hex chars of sha256(raw ip).
+/// Anonymous id: `peer-` + first 8 hex chars of sha256(key || 0 || raw ip).
 pub fn peer_handle(raw_ip: &str) -> String {
-    let digest = hex::encode(Sha256::digest(raw_ip.as_bytes()));
+    peer_handle_with(&settings().peer_handle_key, raw_ip)
+}
+
+fn peer_handle_with(key: &[u8], raw_ip: &str) -> String {
+    let mut h = Sha256::new();
+    h.update(key);
+    h.update([0u8]);
+    h.update(raw_ip.as_bytes());
+    let digest = hex::encode(h.finalize());
     format!("peer-{}", &digest[..8])
 }
 
@@ -626,10 +663,16 @@ mod tests {
     #[test]
     fn masking_and_handle() {
         assert_eq!(mask_ip("149.50.116.7"), "149.50.x.x");
-        assert_eq!(mask_ip("2001:db8::1"), "2001:db8::1");
+        assert_eq!(mask_ip("2001:db8::1"), "2001:db8:x:x");
         assert_eq!(mask_ip(""), "");
         // sha256("1.2.3.4") = 6694f83c...
-        assert_eq!(peer_handle("1.2.3.4"), "peer-6694f83c");
+        // Keyed: the same key gives the same handle, another key a different
+        // one, and none equals the old reversible sha256(ip).
+        let a = peer_handle_with(b"k1", "1.2.3.4");
+        assert_eq!(a, peer_handle_with(b"k1", "1.2.3.4"));
+        assert_ne!(a, peer_handle_with(b"k2", "1.2.3.4"));
+        assert_ne!(a, "peer-6694f83c");
+        assert!(peer_handle("1.2.3.4").starts_with("peer-"));
     }
 
     #[test]
