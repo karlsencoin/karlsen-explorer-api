@@ -683,11 +683,12 @@ async fn halving_and_karlsend_follow_production_shape() {
 
 // ---- /info/price, /info/market-data ----
 
-/// NonKYC ticker values behind the production capture (numbers as strings, as
-/// NonKYC sends them).
-const TICKER: &str = r#"{"ticker_id":"KLS_USDT","last_price":"0.000083549","high":"0.00015","low":"0.000069",
-"bid":"0.000083244","ask":"0.00008355","base_volume":"13718051.1385","usd_volume_est":"1390.75",
-"change_percent":"-30.35","previous_day_price":"0.000119966"}"#;
+/// KarlsenX native ticker (`/api/v1/ticker`, decimals as strings) carrying the
+/// values behind the production capture; the 24 h change is derived from `open_24h`.
+const TICKER: &str = r#"{"ticker_id":"KLS_USDT","base_currency":"KLS","target_currency":"USDT",
+"last_price":"0.000083549","open_24h":"0.000119966","high":"0.00015","low":"0.000069",
+"bid":"0.000083244","ask":"0.00008355","trading_open":true,"reference_price":null,
+"base_volume":"13718051.1385","target_volume":"1390.75"}"#;
 
 async fn start_ticker(body: &'static str, status: u16) -> String {
     use axum::{http::StatusCode, routing::get, Router};

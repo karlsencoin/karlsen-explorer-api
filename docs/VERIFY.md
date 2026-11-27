@@ -149,7 +149,7 @@ decision (per-address counter table, cap or paging) before cut-over.
 ### Fourth run, with `/info` (2026-10-19)
 
 73 PASS, 0 FAIL, 2 LIVE (the pool address again). All 16 `/info` checks pass against
-production, including `price` / `market-data` through the real NonKYC ticker. Node-backed
+production, including `price` / `market-data` through the real KarlsenX ticker. Node-backed
 `/info` answers take 1–2 ms (legacy 2–7 ms).
 
 ### Fifth run, with `dag-window` and `miners` (2026-10-19)

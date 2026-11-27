@@ -1,4 +1,4 @@
-//! KLS/USDT ticker from NonKYC, shared by `/info/price` and `/info/market-data`.
+//! KLS/USDT ticker from KarlsenX (x.karlsencoin.org), shared by `/info/price` and `/info/market-data`.
 //!
 //! The ticker is cached for 60 s (legacy cached the price for 60 s and fetched
 //! market data on every request). Only one request goes upstream at a time; callers
@@ -12,7 +12,7 @@ use std::{
 use serde_json::Value;
 use tokio::sync::Mutex;
 
-pub const DEFAULT_TICKER_URL: &str = "https://api.nonkyc.io/api/v2/ticker/KLS/USDT";
+pub const DEFAULT_TICKER_URL: &str = "https://x.karlsencoin.org/api/v1/ticker";
 const TTL: Duration = Duration::from_secs(60);
 
 /// The ticker fields the API uses, already parsed.
@@ -37,27 +37,41 @@ pub enum MarketError {
     Field(&'static str),
 }
 
-/// NonKYC sends numbers as strings; accept both.
-fn num(v: &Value, key: &'static str) -> Result<f64, MarketError> {
+/// Accept numbers sent as strings or as JSON numbers.
+fn opt_num(v: &Value, key: &str) -> Option<f64> {
     match &v[key] {
         Value::Number(n) => n.as_f64(),
         Value::String(s) => s.trim().parse().ok(),
         _ => None,
     }
-    .ok_or(MarketError::Field(key))
 }
 
+fn num(v: &Value, key: &'static str) -> Result<f64, MarketError> {
+    opt_num(v, key).ok_or(MarketError::Field(key))
+}
+
+/// Parses the KarlsenX native ticker (`/api/v1/ticker`). Fields without trades in
+/// the last 24 h (`high`, `low`, `open_24h`) are `null` and fall back to the last
+/// price; an empty book side falls back to the last price as well. The change and
+/// USD volume are derived (USDT is taken as USD; change rounded to 2 decimals).
 pub fn parse_ticker(v: &Value) -> Result<Ticker, MarketError> {
+    let last = num(v, "last_price")?;
+    let or_last = |k: &str| opt_num(v, k).unwrap_or(last);
+    let open = or_last("open_24h");
     Ok(Ticker {
-        last_price: num(v, "last_price")?,
-        high: num(v, "high")?,
-        low: num(v, "low")?,
-        bid: num(v, "bid")?,
-        ask: num(v, "ask")?,
+        last_price: last,
+        high: or_last("high").max(last),
+        low: or_last("low").min(last),
+        bid: or_last("bid"),
+        ask: or_last("ask"),
         base_volume: num(v, "base_volume")?,
-        usd_volume: num(v, "usd_volume_est")?,
-        change_percent: num(v, "change_percent")?,
-        previous_day_price: num(v, "previous_day_price")?,
+        usd_volume: num(v, "target_volume")?,
+        change_percent: if open > 0.0 {
+            ((last - open) / open * 10_000.0).round() / 100.0
+        } else {
+            0.0
+        },
+        previous_day_price: open,
     })
 }
 
@@ -86,9 +100,9 @@ impl MarketFeed {
         }
     }
 
-    /// `NONKYC_TICKER_URL` or the public NonKYC endpoint.
+    /// `KLS_TICKER_URL` or the public KarlsenX endpoint.
     pub fn from_env() -> Self {
-        Self::new(&std::env::var("NONKYC_TICKER_URL").unwrap_or_else(|_| DEFAULT_TICKER_URL.into()))
+        Self::new(&std::env::var("KLS_TICKER_URL").unwrap_or_else(|_| DEFAULT_TICKER_URL.into()))
     }
 
     async fn fetch(&self) -> Result<Ticker, MarketError> {
@@ -123,7 +137,7 @@ impl MarketFeed {
                 Ok((t, false))
             }
             Err(e) => {
-                tracing::warn!(error = %e, "NonKYC ticker unavailable");
+                tracing::warn!(error = %e, "KarlsenX ticker unavailable");
                 match &c.ticker {
                     Some((t, _)) => Ok((t.clone(), true)),
                     None => Err(e),
@@ -138,21 +152,33 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parses_strings_and_numbers() {
+    fn parses_karlsenx_ticker() {
         let v = serde_json::json!({
-            "last_price": "0.000083549", "high": 0.00015, "low": "0.000069", "bid": "0.000083244",
-            "ask": "0.00008355", "base_volume": "13718051.1385", "usd_volume_est": "1390.75",
-            "change_percent": "-30.35", "previous_day_price": "0.000119966"
+            "ticker_id": "KLS_USDT", "last_price": "0.00003110", "open_24h": "0.00003500",
+            "high": "0.00003504", "low": "0.00003100", "bid": "0.00003105", "ask": "0.00003112",
+            "base_volume": "206000.5", "target_volume": "6.71"
         });
         let t = parse_ticker(&v).unwrap();
-        assert_eq!(t.last_price, 8.3549e-05);
-        assert_eq!(t.high, 0.00015);
-        assert_eq!(t.change_percent, -30.35);
+        assert_eq!(t.last_price, 3.11e-05);
+        assert_eq!(t.previous_day_price, 3.5e-05);
+        assert_eq!(t.change_percent, -11.14);
+        assert_eq!(t.usd_volume, 6.71);
     }
 
     #[test]
-    fn missing_field_is_an_error() {
-        let v = serde_json::json!({"last_price": "1"});
-        assert!(matches!(parse_ticker(&v), Err(MarketError::Field("high"))));
+    fn quiet_day_falls_back_to_last() {
+        let v = serde_json::json!({
+            "last_price": 0.00003, "open_24h": null, "high": null, "low": null,
+            "bid": null, "ask": "0.000031", "base_volume": "0", "target_volume": "0"
+        });
+        let t = parse_ticker(&v).unwrap();
+        assert_eq!((t.high, t.low, t.bid, t.previous_day_price), (3e-05, 3e-05, 3e-05, 3e-05));
+        assert_eq!(t.change_percent, 0.0);
+    }
+
+    #[test]
+    fn missing_last_price_is_an_error() {
+        let v = serde_json::json!({"last_price": null});
+        assert!(matches!(parse_ticker(&v), Err(MarketError::Field("last_price"))));
     }
 }

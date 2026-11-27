@@ -12,7 +12,7 @@ pub struct AppState {
     pub db: PgPool,
     /// karlsend gRPC client. `None` serves everything from the database.
     pub node: Option<NodeClient>,
-    /// NonKYC ticker for `/info/price` and `/info/market-data`.
+    /// KarlsenX ticker for `/info/price` and `/info/market-data`.
     pub market: MarketFeed,
     /// Per-address transaction counts (see `count_cache`).
     pub tx_counts: Arc<CountCache>,
@@ -25,7 +25,7 @@ pub struct AppState {
 }
 
 impl AppState {
-    /// Ticker source from `NONKYC_TICKER_URL` (or the public NonKYC endpoint).
+    /// Ticker source from `KLS_TICKER_URL` (or the public KarlsenX endpoint).
     pub fn new(db: PgPool, node: Option<NodeClient>) -> Self {
         Self {
             db,

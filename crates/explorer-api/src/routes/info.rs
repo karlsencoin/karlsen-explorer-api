@@ -291,7 +291,7 @@ pub async fn karlsend(State(state): State<AppState>) -> Result<Json<KarlsendInfo
     }))
 }
 
-// ---- /info/price, /info/market-data (NonKYC) ----
+// ---- /info/price, /info/market-data (KarlsenX ticker) ----
 
 async fn ticker(state: &AppState) -> Result<crate::market::Ticker, ApiError> {
     match state.market.ticker().await {
@@ -308,7 +308,7 @@ struct Price {
     price: PyFloat,
 }
 
-/// Last KLS/USDT price. Legacy answered `0` when NonKYC failed; this API serves the
+/// Last KLS/USDT price. Legacy answered `0` when the ticker failed; this API serves the
 /// last good price, or 503 if it never had one.
 pub async fn price(
     State(state): State<AppState>,
